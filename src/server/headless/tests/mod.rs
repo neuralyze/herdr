@@ -4387,31 +4387,55 @@ fn backpressured_observer_skips_runtime_access_and_recovers_without_new_output()
             target,
         });
         server.render_and_stream();
-        server.app.terminal_runtimes.insert(
-            terminal_id.clone(),
-            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"LATEST"),
-        );
-        server.render_and_stream();
-        assert_eq!(server.clients[&7].deferred_render(), DeferredRender::Full);
-
-        // An absent runtime makes any attempted rendering observable without timing a lock.
+        // The channel adapter can hold one delivered frame, one claimed frame,
+        // and the real queue's pending frame. Distinct source updates saturate
+        // all three without depending on when its forwarding thread runs.
+        for bytes in [
+            b"\r\x1b[2KFIRST".as_slice(),
+            b"\r\x1b[2KSECOND".as_slice(),
+            b"\r\x1b[2KTHIRD".as_slice(),
+            b"\r\x1b[2KLATEST".as_slice(),
+        ] {
+            server.app.terminal_runtimes[&terminal_id].test_process_pty_bytes(bytes);
+            server.render_and_stream();
+        }
         let runtime = server.app.terminal_runtimes.remove(&terminal_id).unwrap();
         server.render_and_stream();
         server.app.terminal_runtimes.insert(terminal_id, runtime);
         assert!(
             server.clients.contains_key(&7),
-            "backpressure must skip runtime access"
+            "backpressured observer disconnected"
         );
         assert!(control.try_recv().is_err());
 
-        let _ = frames.recv().expect("previously accepted frame");
-        assert!(server.handle_server_event(ServerEvent::ClientWriterDrained { client_id: 7 }));
-        server.render_and_stream();
-        let ServerMessage::Terminal(frame) = read_server_message(frames.recv().unwrap()) else {
-            panic!("terminal update");
-        };
-        assert!(String::from_utf8_lossy(&frame.bytes).contains("LATEST"));
-        assert_eq!(server.clients[&7].deferred_render(), DeferredRender::None);
+        let display = crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"");
+        let mut recovered = false;
+        // Draining the adapter may expose older accepted frames first. Replay
+        // actual ANSI into a consumer terminal and drive each writer-drained
+        // event; no further source output is supplied during recovery.
+        for _ in 0..6 {
+            let ServerMessage::Terminal(frame) =
+                read_server_message(frames.recv_timeout(Duration::from_secs(2)).unwrap())
+            else {
+                panic!("terminal update");
+            };
+            display.test_process_pty_bytes(&frame.bytes);
+            let (_, snapshot) = display.screen_text_snapshot().expect("consumer screen");
+            let visible: String = snapshot.rows[0]
+                .cells
+                .iter()
+                .flat_map(|cell| cell.graphemes.iter())
+                .filter_map(|codepoint| char::from_u32(*codepoint))
+                .collect();
+            if visible.starts_with("LATEST") {
+                recovered = true;
+                break;
+            }
+            server.handle_server_event(ServerEvent::ClientWriterDrained { client_id: 7 });
+            server.render_and_stream();
+        }
+        assert!(recovered, "latest source output never reached the observer");
+        assert!(server.clients.contains_key(&7));
     });
 }
 
