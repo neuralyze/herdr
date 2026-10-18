@@ -196,7 +196,7 @@ impl ClientWriter {
         self.render.queue.send_projection()
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn test_paused() -> Self {
         let queue = ClientWriterQueue::new();
         Self {
@@ -214,7 +214,7 @@ impl ClientWriter {
         }
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn test_drain(&self) -> Vec<Vec<u8>> {
         let mut frames = Vec::new();
         loop {

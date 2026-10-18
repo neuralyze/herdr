@@ -1214,16 +1214,13 @@ fn install_shared_view_test_runtime(server: &mut HeadlessServer) -> crate::layou
     pane_id
 }
 
-fn connect_test_shell(
+fn connect_test_shell_with_writer(
     server: &mut HeadlessServer,
     client_id: u64,
     surface_cols: u16,
     surface_rows: u16,
-) -> (
-    std::sync::mpsc::Receiver<Vec<u8>>,
-    std::sync::mpsc::Receiver<Vec<u8>>,
+    writer: ClientWriter,
 ) {
-    let (writer, control, render) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
             surface_reuse: false,
@@ -1242,6 +1239,19 @@ fn connect_test_shell(
             writer,
         })
     );
+}
+
+fn connect_test_shell(
+    server: &mut HeadlessServer,
+    client_id: u64,
+    surface_cols: u16,
+    surface_rows: u16,
+) -> (
+    std::sync::mpsc::Receiver<Vec<u8>>,
+    std::sync::mpsc::Receiver<Vec<u8>>,
+) {
+    let (writer, control, render) = test_client_writer();
+    connect_test_shell_with_writer(server, client_id, surface_cols, surface_rows, writer);
     (control, render)
 }
 
@@ -1294,6 +1304,80 @@ fn recv_pane_surface_patch(
         ServerMessage::PaneSurfacePatch(patch) => patch,
         other => panic!("{context}: expected pane surface patch, got {other:?}"),
     }
+}
+fn drain_projection_and_surface(
+    writer: &ClientWriter,
+) -> (
+    Option<Box<protocol::ClientShellSnapshot>>,
+    Vec<ServerMessage>,
+) {
+    let mut snapshot: Option<Box<protocol::ClientShellSnapshot>> = None;
+    let mut view: Option<protocol::endpoint::EndpointAgentViewProjection> = None;
+    let mut completions: Option<protocol::endpoint::EndpointAgentCompletions> = None;
+    let mut surfaces = Vec::new();
+    for bytes in writer.test_drain() {
+        let mut cursor = std::io::Cursor::new(bytes);
+        while cursor.position() < cursor.get_ref().len() as u64 {
+            let message: ServerMessage =
+                protocol::read_message(&mut cursor, protocol::MAX_GRAPHICS_FRAME_SIZE).unwrap();
+            match message {
+                ServerMessage::EndpointControl { kind, data }
+                    if kind == protocol::endpoint::ENDPOINT_SNAPSHOT_KIND =>
+                {
+                    snapshot = Some(Box::new(serde_json::from_str(&data).unwrap()));
+                }
+                ServerMessage::EndpointControl { kind, data }
+                    if kind == protocol::endpoint::AGENT_VIEW_PROJECTION_KIND =>
+                {
+                    view = Some(serde_json::from_str(&data).unwrap());
+                }
+                ServerMessage::EndpointControl { kind, data }
+                    if kind == protocol::endpoint::AGENT_COMPLETIONS_KIND =>
+                {
+                    completions = Some(serde_json::from_str(&data).unwrap());
+                }
+                message => surfaces.push(message),
+            }
+        }
+    }
+    if let Some(snapshot) = &snapshot {
+        let view = view.unwrap();
+        let completions = completions.unwrap();
+        assert_eq!(view.boot_id, snapshot.boot_id);
+        assert_eq!(view.revision, snapshot.revision);
+        assert_eq!(completions.boot_id, snapshot.boot_id);
+        assert_eq!(completions.revision, snapshot.revision);
+        let label = view
+            .view
+            .map(serde_json::from_value::<crate::api::schema::AgentViewSetParams>)
+            .transpose()
+            .unwrap()
+            .and_then(|view| view.label);
+        assert_eq!(label, snapshot.agent_view_label);
+    }
+    (snapshot, surfaces)
+}
+
+fn consume_paused_shell(
+    writer: &ClientWriter,
+    receiver: &mut crate::client::ClientShellState,
+) -> bool {
+    let (snapshot, messages) = drain_projection_and_surface(writer);
+    if let Some(snapshot) = snapshot {
+        receiver.set_snapshot(snapshot);
+    }
+    let mut patched = false;
+    for message in messages {
+        match message {
+            ServerMessage::PaneSurface(surface) => receiver.set_pane_surface(surface),
+            ServerMessage::PaneSurfacePatch(patch) => {
+                let _ = receiver.apply_pane_surface_patch(patch);
+                patched = true;
+            }
+            other => panic!("unexpected shell presentation: {other:?}"),
+        }
+    }
+    patched
 }
 
 #[tokio::test]
@@ -1723,60 +1807,45 @@ async fn late_retained_fallback_leaves_all_client_baselines_unchanged() {
 async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_peer() {
     let mut server = test_headless_server();
     let pane_id = install_shared_view_test_runtime(&mut server);
-    let (responsive_control, responsive_render) = connect_matching_test_shell(&mut server, 7);
-    let (slow_control, slow_render) = connect_matching_test_shell(&mut server, 8);
-    let _ = responsive_control.recv().expect("responsive snapshot");
-    let _ = slow_control.recv().expect("slow snapshot");
-    server.render_and_stream();
-    let _ = responsive_render
-        .recv()
-        .expect("responsive initial surface");
-    let _ = slow_render.recv().expect("slow initial surface");
-
-    let sources = HashSet::from([pane_id]);
-    write_shared_test_pane(&mut server, pane_id, b"\rONE");
-    assert!(server.render_retained_pane_surface_and_stream(&sources));
-    assert!(matches!(
-        read_server_message(responsive_render.recv().expect("responsive first patch")),
-        ServerMessage::PaneSurfacePatch(_)
-    ));
-
-    let slow_baseline = server.clients[&8]
-        .render_state
-        .last_pane_surface()
-        .unwrap()
-        .clone();
-    write_shared_test_pane(&mut server, pane_id, b"\rTWO\x1b[?1003h");
-    assert!(server.render_retained_pane_surface_and_stream(&sources));
-    assert!(matches!(
-        read_server_message(responsive_render.recv().expect("responsive second patch")),
-        ServerMessage::PaneSurfacePatch(_)
-    ));
-    assert_eq!(server.clients[&8].deferred_render(), DeferredRender::Full);
-    assert_eq!(
-        server.clients[&8].render_state.last_pane_surface(),
-        Some(&slow_baseline),
-        "queue-full must not advance cells, metadata, cursor, or revision"
+    let config = crate::config::Config::default();
+    let mut responsive = crate::client::ClientShellState::new(
+        crate::client::ClientShellConfig::from_config(&config),
     );
-
-    write_shared_test_pane(&mut server, pane_id, b"\rTHREE");
-    assert!(server.render_retained_pane_surface_and_stream(&sources));
-    assert!(matches!(
-        read_server_message(responsive_render.recv().expect("responsive third patch")),
-        ServerMessage::PaneSurfacePatch(_)
-    ));
-
-    assert!(matches!(
-        read_server_message(slow_render.recv().expect("slow queued first patch")),
-        ServerMessage::PaneSurfacePatch(_)
-    ));
-    assert!(server.handle_server_event(ServerEvent::ClientWriterDrained { client_id: 8 }));
+    let mut slow = crate::client::ClientShellState::new(
+        crate::client::ClientShellConfig::from_config(&config),
+    );
+    let size = responsive.surface_size(80, 24);
+    let responsive_writer = ClientWriter::test_paused();
+    let slow_writer = ClientWriter::test_paused();
+    connect_test_shell_with_writer(
+        &mut server,
+        7,
+        size.cols,
+        size.rows,
+        responsive_writer.clone(),
+    );
+    connect_test_shell_with_writer(&mut server, 8, size.cols, size.rows, slow_writer.clone());
     server.render_and_stream();
-    assert!(matches!(
-        read_server_message(slow_render.recv().expect("slow full recovery surface")),
-        ServerMessage::PaneSurface(_)
-    ));
+    consume_paused_shell(&responsive_writer, &mut responsive);
+    consume_paused_shell(&slow_writer, &mut slow);
 
+    // Only the responsive peer consumes updates. The paused peer exercises
+    // replacement of real pending presentations, not an adapter-thread race.
+    for (bytes, text) in [
+        (b"\rPEER_ONE\x1b[K".as_slice(), "PEER_ONE"),
+        (b"\rPEER_TWO\x1b[K\x1b[?1003h".as_slice(), "PEER_TWO"),
+        (b"\rPEER_THREE\x1b[K".as_slice(), "PEER_THREE"),
+    ] {
+        write_shared_test_pane(&mut server, pane_id, bytes);
+        assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
+        assert!(consume_paused_shell(&responsive_writer, &mut responsive));
+        assert!(
+            frame_text(&responsive.compose(80, 24).expect("responsive display")).contains(text)
+        );
+    }
+
+    consume_paused_shell(&slow_writer, &mut slow);
+    assert!(frame_text(&slow.compose(80, 24).expect("slow display")).contains("PEER_THREE"));
     shutdown_test_runtimes(&mut server);
 }
 
@@ -1784,41 +1853,43 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
 async fn full_render_backpressure_does_not_disable_responsive_peer_patches() {
     let mut server = test_headless_server();
     let pane_id = install_shared_view_test_runtime(&mut server);
-    let (responsive_control, responsive_render) = connect_matching_test_shell(&mut server, 7);
-    let (slow_control, slow_render) = connect_matching_test_shell(&mut server, 8);
-    let _ = responsive_control.recv().expect("responsive snapshot");
-    let _ = slow_control.recv().expect("slow snapshot");
+    let config = crate::config::Config::default();
+    let mut responsive = crate::client::ClientShellState::new(
+        crate::client::ClientShellConfig::from_config(&config),
+    );
+    let mut slow = crate::client::ClientShellState::new(
+        crate::client::ClientShellConfig::from_config(&config),
+    );
+    let size = responsive.surface_size(80, 24);
+    let responsive_writer = ClientWriter::test_paused();
+    let slow_writer = ClientWriter::test_paused();
+    connect_test_shell_with_writer(
+        &mut server,
+        7,
+        size.cols,
+        size.rows,
+        responsive_writer.clone(),
+    );
+    connect_test_shell_with_writer(&mut server, 8, size.cols, size.rows, slow_writer.clone());
     server.render_and_stream();
-    let _ = responsive_render
-        .recv()
-        .expect("responsive initial surface");
-    // Keep the slow client's initial surface queued, then force another full
-    // replacement for both clients.
+    consume_paused_shell(&responsive_writer, &mut responsive);
+
+    // The slow peer has not consumed even its initial full surface. A new
+    // full replacement must not disable incremental delivery to the fast peer.
     server.clients.get_mut(&7).unwrap().request_repaint();
     server.clients.get_mut(&8).unwrap().request_repaint();
     server.app.full_redraw_pending = true;
     server.render_and_stream();
-    let _ = responsive_render
-        .recv()
-        .expect("responsive full replacement");
-    assert_eq!(server.clients[&8].deferred_render(), DeferredRender::Full);
-    assert!(!server.app.full_redraw_pending);
+    consume_paused_shell(&responsive_writer, &mut responsive);
 
-    write_shared_test_pane(&mut server, pane_id, b"\rPATCH");
+    write_shared_test_pane(&mut server, pane_id, b"\rAFTER_FULL\x1b[K");
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
-    assert!(matches!(
-        read_server_message(responsive_render.recv().expect("responsive retained patch")),
-        ServerMessage::PaneSurfacePatch(_)
-    ));
-
-    let _ = slow_render.recv().expect("slow queued initial surface");
-    assert!(server.handle_server_event(ServerEvent::ClientWriterDrained { client_id: 8 }));
-    server.render_and_stream();
-    assert!(matches!(
-        read_server_message(slow_render.recv().expect("slow full recovery surface")),
-        ServerMessage::PaneSurface(_)
-    ));
-
+    assert!(consume_paused_shell(&responsive_writer, &mut responsive));
+    assert!(
+        frame_text(&responsive.compose(80, 24).expect("responsive display")).contains("AFTER_FULL")
+    );
+    consume_paused_shell(&slow_writer, &mut slow);
+    assert!(frame_text(&slow.compose(80, 24).expect("slow display")).contains("AFTER_FULL"));
     shutdown_test_runtimes(&mut server);
 }
 
