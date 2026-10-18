@@ -4421,13 +4421,13 @@ fn backpressured_observer_skips_runtime_access_and_recovers_without_new_output()
             };
             display.test_process_pty_bytes(&frame.bytes);
             let (_, snapshot) = display.screen_text_snapshot().expect("consumer screen");
-            let visible: String = snapshot.rows[0]
+            let visible = snapshot.rows[0]
                 .cells
                 .iter()
                 .flat_map(|cell| cell.graphemes.iter())
                 .filter_map(|codepoint| char::from_u32(*codepoint))
-                .collect();
-            if visible.starts_with("LATEST") {
+                .take("LATEST".len());
+            if visible.eq("LATEST".chars()) {
                 recovered = true;
                 break;
             }
