@@ -37,6 +37,45 @@ pub const AGENT_VIEW_PROJECTION_KIND: &str = "endpoint.agent-view.v1";
 pub const AGENT_COMPLETIONS_CAPABILITY: &str = "agent_completions";
 pub const AGENT_COMPLETIONS_KIND: &str = "endpoint.agent-completions.v1";
 
+pub const TERMINAL_SESSION_SET_MODE_KIND: &str = "terminal.session.set_mode";
+pub const TERMINAL_SESSION_STATE_KIND: &str = "terminal.session.state";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalSessionMode {
+    Observe,
+    Control,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalSessionRequest {
+    pub target: String,
+    pub mode: TerminalSessionMode,
+    pub cols: u16,
+    pub rows: u16,
+    pub request_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalSessionState {
+    pub target: String,
+    pub mode: TerminalSessionMode,
+    pub cols: u16,
+    pub rows: u16,
+    pub request_id: u64,
+    pub error: Option<String>,
+}
+
+pub fn terminal_session_geometry_valid(cols: u16, rows: u16) -> bool {
+    cols != 0
+        && rows != 0
+        && cols <= 4096
+        && rows <= 4096
+        && u32::from(cols) * u32::from(rows) <= 1_000_000
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointAgentCompletions {
     pub boot_id: String,

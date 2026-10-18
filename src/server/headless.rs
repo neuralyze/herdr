@@ -83,6 +83,7 @@ mod notifications;
 mod render;
 mod retained_surface;
 mod surface_interest;
+mod terminal_session;
 
 // Producers can refill even a bounded channel while it is being drained.
 // Yield to scheduled work and rendering between batches; select! below
@@ -2064,6 +2065,9 @@ impl HeadlessServer {
                 target,
                 takeover,
             } => self.control_terminal_client(client_id, target, takeover),
+            ServerEvent::ClientTerminalSessionMode { client_id, data } => {
+                self.set_managed_terminal_mode(client_id, data)
+            }
             ServerEvent::ClientAttachScroll {
                 client_id,
                 source,
@@ -2179,6 +2183,14 @@ impl HeadlessServer {
                 cell_height_px,
                 pixel_mouse,
             } => {
+                if self.clients.get(&client_id).is_some_and(|client| client.managed_terminal.is_some())
+                    && (!crate::protocol::endpoint::terminal_session_geometry_valid(cols, rows)
+                        || cell_width_px > 4096
+                        || cell_height_px > 4096
+                        || !matches!(self.clients[&client_id].mode, ClientConnectionMode::TerminalAttach { .. }))
+                {
+                    return false;
+                }
                 info!(
                     client_id,
                     cols, rows, cell_width_px, cell_height_px, pixel_mouse, "client resize"

@@ -140,6 +140,14 @@ impl ClientWriter {
         self.render.queue.discard_pending_render()
     }
 
+    /// One reliable ANSI mode boundary. An already claimed (possibly partially
+    /// written) frame finishes first; replaceable old-mode work is discarded.
+    /// The state reply and full frame share one FIFO item and cannot be split by
+    /// control fairness or a later transition.
+    pub(crate) fn send_terminal_transition(&self, data: Vec<u8>) -> Result<(), SendError<Vec<u8>>> {
+        self.render.queue.send_terminal_transition(data)
+    }
+
     /// Cache a complete typed projection. Snapshot deltas are encoded at claim,
     /// against the last non-discardable snapshot, never a replaceable candidate.
     pub(crate) fn set_shell_projection(
@@ -539,6 +547,33 @@ impl ClientWriterQueue {
         Ok(())
     }
 
+    fn send_terminal_transition(&self, data: Vec<u8>) -> Result<(), SendError<Vec<u8>>> {
+        let mut state = self.lock_state();
+        // Only direct TerminalAnsi streams use this boundary. Never discard a
+        // shell projection or protected graphics work through this API.
+        if !state.writer_alive
+            || !state.ordered.is_empty()
+            || state.render_protected
+            || state.projection.is_some()
+            || state.control.len() >= MAX_PENDING_CONTROL_ITEMS
+            || data.len() > MAX_PENDING_CONTROL_BYTES.saturating_sub(state.control_bytes)
+        {
+            state.writer_alive = false;
+            state.clear();
+            self.ready.notify_all();
+            drop(state);
+            self.disconnect();
+            return Err(SendError(data));
+        }
+        state.render = None;
+        state.render_claim = None;
+        state.control_bytes += data.len();
+        state.control.push_back(data);
+        state.ordered_control_prefix = state.control.len();
+        self.ready.notify_one();
+        Ok(())
+    }
+
     #[cfg(test)]
     fn try_send_render(&self, data: Vec<u8>) -> Result<(), TrySendError<Vec<u8>>> {
         self.enqueue_render(data, false)
@@ -803,6 +838,10 @@ pub(crate) enum ServerEvent {
         client_id: u64,
         target: String,
         takeover: bool,
+    },
+    ClientTerminalSessionMode {
+        client_id: u64,
+        data: String,
     },
     /// A direct terminal attach client requested scrollback movement.
     ClientAttachScroll {
@@ -1715,6 +1754,11 @@ fn client_read_loop_with_endpoint_controls(
                 }
             }
             ClientMessage::EndpointControl { kind, data }
+                if kind == crate::protocol::endpoint::TERMINAL_SESSION_SET_MODE_KIND =>
+            {
+                ServerEvent::ClientTerminalSessionMode { client_id, data }
+            }
+            ClientMessage::EndpointControl { kind, data }
                 if kind == crate::protocol::endpoint::PRESENTATION_EFFECTS_SYNC_KIND =>
             {
                 ServerEvent::ClientShellPresentationSync {
@@ -1911,6 +1955,84 @@ mod tests {
         let mut bytes = Vec::new();
         protocol::write_message(&mut bytes, message).expect("frame server message");
         bytes
+    }
+
+    #[test]
+    fn terminal_session_boundary_keeps_claimed_partial_frame_and_drops_only_pending_old_frame() {
+        let (writer, queue) = test_queue_writer();
+        let frame = |seq, byte| frame_server_message(&ServerMessage::Terminal(protocol::TerminalFrame {
+            seq, width: 80, height: 24, full: true, bytes: vec![byte; 1024],
+        }));
+        let old = frame(1, b'o');
+        writer.render.try_send(old.clone()).unwrap();
+        let Some(ClientWriteItem::Render(in_flight)) = queue.recv() else { panic!("claimed old frame") };
+        let split = in_flight.len() / 2;
+        let mut delivered = in_flight[..split].to_vec();
+        writer.render.try_send(frame(2, b'x')).unwrap();
+        let state = protocol::endpoint::TerminalSessionState {
+            target: "w1:p1".into(), mode: protocol::endpoint::TerminalSessionMode::Control,
+            cols: 80, rows: 24, request_id: 1, error: None,
+        };
+        let mut boundary = frame_server_message(&ServerMessage::EndpointControl {
+            kind: protocol::endpoint::TERMINAL_SESSION_STATE_KIND.into(),
+            data: serde_json::to_string(&state).unwrap(),
+        });
+        boundary.extend(frame(3, b'n'));
+        writer.send_terminal_transition(boundary.clone()).unwrap();
+        // Exhausting the control fairness burst cannot let the later render
+        // overtake the acknowledged mode/full-frame boundary.
+        queue.lock_state().control_burst = CONTROL_BURST;
+        writer.render.try_send(frame(4, b'z')).unwrap();
+        delivered.extend_from_slice(&in_flight[split..]);
+        assert_eq!(delivered, old, "a partially written native frame remains intact");
+        assert_eq!(queue.recv(), Some(ClientWriteItem::Control(boundary)));
+        assert_eq!(queue.recv(), Some(ClientWriteItem::Render(frame(4, b'z'))));
+        let ServerMessage::Terminal(received) =
+            protocol::read_message::<_, ServerMessage>(&mut delivered.as_slice(), MAX_FRAME_SIZE).unwrap()
+        else { panic!() };
+        assert_eq!(received.seq, 1);
+        assert!(queue.lock_state().render.is_none());
+    }
+
+    #[test]
+    fn terminal_session_boundaries_are_reliable_fifo_under_rapid_mode_churn() {
+        let (writer, queue) = test_queue_writer();
+        for id in 0..100_u64 {
+            writer.render.try_send(vec![255]).unwrap();
+            writer.send_terminal_transition(id.to_le_bytes().to_vec()).unwrap();
+        }
+        for id in 0..100_u64 {
+            assert_eq!(queue.recv(), Some(ClientWriteItem::Control(id.to_le_bytes().to_vec())));
+        }
+        assert!(queue.lock_state().render.is_none());
+    }
+
+    #[test]
+    fn terminal_session_native_receiver_orders_mode_input_and_eof_on_one_connection() {
+        let (mut client, server, _path) = local_stream_pair("managed-native-receiver");
+        let (events, mut receiver) = mpsc::channel(8);
+        let quit = Arc::new(AtomicBool::new(false));
+        let handle = std::thread::spawn(move || client_read_loop(server, 7, &events, &quit));
+        for mode in ["observe", "control"] {
+            protocol::write_message(&mut client, &ClientMessage::EndpointControl {
+                kind: protocol::endpoint::TERMINAL_SESSION_SET_MODE_KIND.into(),
+                data: format!(r#"{{"target":"w1:p1","mode":"{mode}","request_id":1,"cols":80,"rows":24}}"#),
+            }).unwrap();
+        }
+        protocol::write_message(&mut client, &ClientMessage::Input { data: vec![3, 27] }).unwrap();
+        drop(client);
+        for mode in ["observe", "control"] {
+            let ServerEvent::ClientTerminalSessionMode { client_id: 7, data } =
+                recv_server_event(&mut receiver, "managed native request")
+            else { panic!("mode event") };
+            let request: protocol::endpoint::TerminalSessionRequest = serde_json::from_str(&data).unwrap();
+            assert_eq!(serde_json::to_value(request.mode).unwrap(), mode);
+        }
+        assert!(matches!(recv_server_event(&mut receiver, "managed input"),
+            ServerEvent::ClientInput { client_id: 7, data } if data == vec![3, 27]));
+        assert!(matches!(recv_server_event(&mut receiver, "managed EOF"),
+            ServerEvent::ClientDisconnected { client_id: 7 }));
+        handle.join().unwrap().unwrap();
     }
 
     fn projection_frames(revision: u64, clear: bool) -> [Vec<u8>; 3] {

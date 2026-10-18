@@ -129,10 +129,18 @@ impl ClientShellLocation {
     }
 }
 
+/// A managed connection is permanently bound to this exact resolved terminal.
+pub(crate) struct ManagedTerminalSession {
+    pub(crate) target: String,
+    pub(crate) terminal_id: String,
+    pub(crate) last_request_id: u64,
+}
+
 /// A connected client tracked by the server.
 pub(crate) struct ClientConnection {
     /// Whether this connection owns the Herdr shell or one direct terminal stream.
     pub(crate) mode: ClientConnectionMode,
+    pub(crate) managed_terminal: Option<ManagedTerminalSession>,
     /// The client's terminal size after clamping.
     pub(crate) terminal_size: (u16, u16),
     /// Pixel size of one client terminal cell.
@@ -225,6 +233,7 @@ impl ClientConnection {
     ) -> Self {
         Self {
             mode,
+            managed_terminal: None,
             terminal_size,
             cell_size,
             last_activity,

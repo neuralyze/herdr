@@ -44,6 +44,8 @@ const TERMINAL_SESSION_OBSERVE_USAGE: &str =
     "usage: herdr terminal session observe <target> [--cols N] [--rows N]";
 const TERMINAL_SESSION_CONTROL_USAGE: &str =
     "usage: herdr terminal session control <target> [--takeover] [--cols N] [--rows N]";
+const TERMINAL_SESSION_MANAGED_USAGE: &str =
+    "usage: herdr terminal session managed <target> [--cols N] [--rows N]";
 pub(crate) const AGENT_HELP_FOOTER: &str = concat!(
     "Are you an AI? Use these resources ONLY IF your task specifically asks you to:\n",
     "  Help a human understand or set up Herdr for the first time:\n",
@@ -568,14 +570,17 @@ fn terminal_session(args: &[String]) -> std::io::Result<i32> {
     match args.first().map(|arg| arg.as_str()) {
         Some("control") => terminal_session_control(&args[1..]),
         Some("observe") => terminal_session_observe(&args[1..]),
+        Some("managed") => terminal_session_managed(&args[1..]),
         Some("help" | "--help" | "-h") => {
             eprintln!("{TERMINAL_SESSION_CONTROL_USAGE}");
             eprintln!("{TERMINAL_SESSION_OBSERVE_USAGE}");
+            eprintln!("{TERMINAL_SESSION_MANAGED_USAGE}");
             Ok(0)
         }
         _ => {
             eprintln!("{TERMINAL_SESSION_CONTROL_USAGE}");
             eprintln!("{TERMINAL_SESSION_OBSERVE_USAGE}");
+            eprintln!("{TERMINAL_SESSION_MANAGED_USAGE}");
             Ok(2)
         }
     }
@@ -613,6 +618,17 @@ fn terminal_session_observe(args: &[String]) -> std::io::Result<i32> {
     };
 
     crate::client::run_terminal_session_observe(options.target, options.cols, options.rows)?;
+    Ok(0)
+}
+
+fn terminal_session_managed(args: &[String]) -> std::io::Result<i32> {
+    let options = match parse_terminal_session_options(
+        args, TERMINAL_SESSION_MANAGED_USAGE, "managed", false,
+    )? {
+        Ok(options) => options,
+        Err(code) => return Ok(code),
+    };
+    crate::client::run_terminal_session_managed(options.target, options.cols, options.rows)?;
     Ok(0)
 }
 
@@ -989,6 +1005,7 @@ fn print_terminal_help() {
     eprintln!("  herdr terminal attach <terminal_id> [--takeover]");
     eprintln!("  herdr terminal session control <target> [--takeover] [--cols N] [--rows N]");
     eprintln!("  herdr terminal session observe <target> [--cols N] [--rows N]");
+    eprintln!("  herdr terminal session managed <target> [--cols N] [--rows N]");
     eprintln!("  herdr terminal title set <title>");
     eprintln!("  herdr terminal title clear");
     eprintln!("  detach from direct attach with ctrl+b q; send literal ctrl+b with ctrl+b ctrl+b");
@@ -1138,5 +1155,19 @@ mod tests {
                 "5000",
             ]
         );
+    }
+
+    #[test]
+    fn managed_terminal_options_accept_geometry_but_never_takeover() {
+        let args = ["w1:p1", "--cols", "91", "--rows", "27"].map(String::from);
+        let parsed = super::parse_terminal_session_options(
+            &args, super::TERMINAL_SESSION_MANAGED_USAGE, "managed", false,
+        ).unwrap();
+        let Ok(options) = parsed else { panic!("managed options") };
+        assert_eq!((options.target.as_str(), options.cols, options.rows, options.takeover), ("w1:p1", 91, 27, false));
+        let args = ["w1:p1", "--takeover"].map(String::from);
+        assert!(matches!(super::parse_terminal_session_options(
+            &args, super::TERMINAL_SESSION_MANAGED_USAGE, "managed", false,
+        ).unwrap(), Err(2)));
     }
 }

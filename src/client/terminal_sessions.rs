@@ -15,6 +15,9 @@ use crate::server::socket_paths::client_socket_path;
 
 use super::{do_handshake, init_logging, write_to_server, ClientError, HandshakePixelCapabilities};
 
+mod managed;
+pub use managed::run_terminal_session_managed;
+
 /// Runs a read-only terminal session observer and prints one JSON envelope per frame.
 pub fn run_terminal_session_observe(target: String, cols: u16, rows: u16) -> io::Result<()> {
     let mut stream =
@@ -129,21 +132,7 @@ fn write_terminal_session_output(mut stream: LocalStream) -> io::Result<()> {
     let mut stdout = io::stdout().lock();
     loop {
         match protocol::read_message(&mut stream, MAX_GRAPHICS_FRAME_SIZE) {
-            Ok(ServerMessage::Terminal(frame)) => {
-                let encoded = base64::engine::general_purpose::STANDARD.encode(&frame.bytes);
-                let line = serde_json::json!({
-                    "type": "terminal.frame",
-                    "seq": frame.seq,
-                    "encoding": "ansi",
-                    "width": frame.width,
-                    "height": frame.height,
-                    "full": frame.full,
-                    "bytes": encoded,
-                });
-                serde_json::to_writer(&mut stdout, &line)?;
-                stdout.write_all(b"\n")?;
-                stdout.flush()?;
-            }
+            Ok(ServerMessage::Terminal(frame)) => write_terminal_frame(&mut stdout, &frame)?,
             Ok(ServerMessage::ServerShutdown { reason }) => {
                 let line = serde_json::json!({
                     "type": "terminal.closed",
@@ -160,6 +149,22 @@ fn write_terminal_session_output(mut stream: LocalStream) -> io::Result<()> {
             Err(err) => return Err(io::Error::other(err.to_string())),
         }
     }
+}
+
+fn write_terminal_frame(stdout: &mut impl io::Write, frame: &protocol::TerminalFrame) -> io::Result<()> {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&frame.bytes);
+    let line = serde_json::json!({
+        "type": "terminal.frame",
+        "seq": frame.seq,
+        "encoding": "ansi",
+        "width": frame.width,
+        "height": frame.height,
+        "full": frame.full,
+        "bytes": encoded,
+    });
+    serde_json::to_writer(&mut *stdout, &line)?;
+    stdout.write_all(b"\n")?;
+    stdout.flush()
 }
 
 #[derive(serde::Deserialize)]

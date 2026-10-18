@@ -453,7 +453,21 @@ impl HeadlessServer {
 
     fn render_and_stream_with_graphics_limit(&mut self, graphics_frame_limit: usize) {
         let full_started = crate::render_prof::timer();
-        let render_targets = render_targets(&self.clients, self.foreground_client_id);
+        let mut render_targets = render_targets(&self.clients, self.foreground_client_id);
+        for (client_id, size, _, _, mode) in &mut render_targets {
+            if let ClientConnectionMode::TerminalObserve { terminal_id } = mode {
+                if self.clients.get(client_id).is_some_and(|client| client.managed_terminal.is_some()) {
+                    if let Some(remote_size) = self.runtime_for_terminal_id_string(terminal_id)
+                        .and_then(|runtime| runtime.terminal_dimensions())
+                    {
+                        *size = remote_size;
+                        if let Some(client) = self.clients.get_mut(client_id) {
+                            client.terminal_size = remote_size;
+                        }
+                    }
+                }
+            }
+        }
 
         if render_targets.is_empty() {
             let (cols, rows) = self.effective_size;

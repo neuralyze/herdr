@@ -241,6 +241,13 @@ fn terminal_command() -> Command {
                         .arg(option("rows", "N")),
                 )
                 .subcommand(
+                    Command::new("managed")
+                        .about("Switch acknowledged observe/control modes on one connection")
+                        .arg(required("target", "TARGET"))
+                        .arg(option("cols", "N"))
+                        .arg(option("rows", "N")),
+                )
+                .subcommand(
                     Command::new("observe")
                         .about("Observe a terminal stream")
                         .arg(required("target", "TARGET"))

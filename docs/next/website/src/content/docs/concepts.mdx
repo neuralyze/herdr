@@ -90,6 +90,12 @@ Clipboard writes, notifications, endpoint responses, and input-mode changes are 
 
 On Linux and macOS, each client socket also requests a 4 KiB send buffer (reported as 8 KiB on Linux) to limit obsolete output queued in the kernel. This does not limit frame sizes or cancel partially written frames. Large in-flight frames, SSH bridges, and terminal buffers can still add latency on slow links; there is no fixed input-latency guarantee. Windows socket buffering is unchanged.
 
+### Managed terminal streams
+
+`herdr terminal session managed TARGET --cols N --rows N` starts a read-only terminal stream. A client can request control with a `terminal.acquire` JSON line and return to observation with `terminal.observe`, without restarting the CLI or SSH connection. Both requests carry a `request_id`, `cols`, and `rows`; stdout reports the backend-confirmed target and mode in `terminal.state` alongside the existing `terminal.frame` messages.
+
+Input is accepted only after the matching successful control acknowledgement. A competing controller is not displaced, and observing does not resize the source terminal. Returning to observation releases control; `terminal.release` or stdin EOF detaches the stream. The remote CLI and server must both support managed sessions; existing standalone observe/control commands remain available.
+
 ## Modes
 
 Herdr has terminal mode, prefix mode, and navigate mode.
