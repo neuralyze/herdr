@@ -221,16 +221,30 @@ async fn offscreen_images_keep_text_updates_on_the_retained_path() {
 
 #[tokio::test]
 async fn retained_unicode_image_arrives_after_fragmented_upload_without_reupload() {
-    let (mut server, _control_rx, client_rx, pane_id) =
+    let (mut server, _control_rx, _client_rx, pane_id) =
         retained_test_server_with_control(b"\x1b[?1049h");
+    let writer = ClientWriter::test_paused();
     let client = server.clients.get_mut(&1).unwrap();
     client.mode = ClientConnectionMode::ClientShell;
+    client.writer = Some(writer.clone());
+    client.render_state.request_repaint();
     client.cell_size = crate::kitty_graphics::HostCellSize {
         width_px: 10,
         height_px: 20,
     };
     server.render_and_stream();
-    let _ = receive_render(&client_rx, Duration::from_millis(100));
+    let _ = writer.test_drain();
+    let receive_surface = || {
+        writer
+            .test_drain()
+            .into_iter()
+            .find_map(|frame| match read_server_message(frame) {
+                ServerMessage::PaneSurface(surface) => Some(surface),
+                ServerMessage::EndpointControl { .. } => None,
+                other => panic!("unexpected virtual-image presentation: {other:?}"),
+            })
+            .expect("virtual-image surface")
+    };
     let sources = HashSet::from([pane_id]);
     // Yazi-style virtual placement: uploading the image and drawing its Unicode cell
     // can happen in separate PTY reads, with no text dirty rows when upload completes.
@@ -241,7 +255,7 @@ async fn retained_unicode_image_arrives_after_fragmented_upload_without_reupload
     ] {
         write_shared_test_pane(&mut server, pane_id, bytes);
         assert!(server.render_retained_pane_surface_and_stream(&sources));
-        for frame in client_rx.try_iter() {
+        for frame in writer.test_drain() {
             if let ServerMessage::PaneSurface(surface) = read_server_message(frame) {
                 assert!(surface.graphics.placements.is_empty());
             }
@@ -253,11 +267,7 @@ async fn retained_unicode_image_arrives_after_fragmented_upload_without_reupload
         "\x1b[2;3H\x1b[38;2;18;52;86m\u{10eeee}\u{0305}\u{0305}\x1b[0m".as_bytes(),
     );
     assert!(server.render_retained_pane_surface_and_stream(&sources));
-    let ServerMessage::PaneSurface(surface) =
-        read_server_message(receive_render(&client_rx, Duration::from_millis(100)))
-    else {
-        panic!("virtual image must arrive without a tab switch");
-    };
+    let surface = receive_surface();
     assert_eq!(surface.graphics.placements.len(), 1);
     assert_eq!(surface.graphics.assets[0].data, [255, 0, 0, 255]);
     // Retransmission removes placements; recreating the virtual placement must
@@ -268,11 +278,7 @@ async fn retained_unicode_image_arrives_after_fragmented_upload_without_reupload
         b"\x1b_Ga=t,f=32,t=d,i=1193046,s=1,v=1,q=2;AP8A/w==\x1b\\",
     );
     assert!(server.render_retained_pane_surface_and_stream(&sources));
-    let ServerMessage::PaneSurface(removed) =
-        read_server_message(receive_render(&client_rx, Duration::from_millis(100)))
-    else {
-        panic!("retransmission must remove the virtual placement");
-    };
+    let removed = receive_surface();
     assert!(removed.graphics.placements.is_empty());
     write_shared_test_pane(
         &mut server,
@@ -280,11 +286,7 @@ async fn retained_unicode_image_arrives_after_fragmented_upload_without_reupload
         b"\x1b_Ga=p,U=1,i=1193046,c=1,r=1,q=2\x1b\\",
     );
     assert!(server.render_retained_pane_surface_and_stream(&sources));
-    let ServerMessage::PaneSurface(replaced) =
-        read_server_message(receive_render(&client_rx, Duration::from_millis(100)))
-    else {
-        panic!("updated image pixels must arrive");
-    };
+    let replaced = receive_surface();
     assert_eq!(replaced.graphics.assets[0].data, [0, 255, 0, 255]);
     assert_ne!(
         surface.graphics.assets[0].key,
