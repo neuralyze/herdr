@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "product": "herdr",
+  "upstream_repository": "herdrdev/herdr",
+  "upstream_commit": "143bf5fd4781d164260c63fe28e7dc08054ad32f",
+  "upstream_tag": null,
+  "patches": [
+    {
+      "id": "bounded-client-presentations",
+      "commit": "cf38c00d26ca882acd29b55ae612d74910e53b8c",
+      "description": "Bound reliable output, replace obsolete pending presentations, preserve incremental surfaces, and negotiate compact inventory updates.",
+      "keywords": ["backpressure", "client output queue", "snapshot delta", "surface baseline", "socket buffering"]
+    },
+    {
+      "id": "acknowledged-managed-terminals",
+      "commit": "1cc948e6357de91ff34abe8d32efa205abad39e6",
+      "description": "Keep one terminal session alive through acknowledged Observe/Control transitions and release without reconnecting.",
+      "keywords": ["managed terminal", "terminal.session.state", "control acknowledgement", "terminal.release"]
+    }
+  ]
+}
