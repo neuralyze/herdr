@@ -1,8 +1,8 @@
 //! Shared wire protocol and presentation encoding code.
 
 pub mod endpoint;
-pub mod snapshot_delta;
 pub(crate) mod render_ansi;
+pub mod snapshot_delta;
 pub(crate) mod surface_delta;
 pub(crate) mod surface_reuse;
 pub(crate) mod surface_scroll;

@@ -161,7 +161,9 @@ impl EndpointRegistry {
         kind: &str,
         data: &str,
     ) -> Result<super::EndpointControlMessage, String> {
-        let connection = self.connections.get_mut(endpoint_id)
+        let connection = self
+            .connections
+            .get_mut(endpoint_id)
             .filter(|connection| connection.generation == generation)
             .ok_or("endpoint control has no matching connection")?;
         super::decode_endpoint_control(kind, data, &mut connection.snapshot_decoder)
@@ -183,7 +185,9 @@ impl EndpointRegistry {
                 transport: Box::new(transport),
                 generation,
                 surface_active,
-                snapshot_decoder: crate::protocol::snapshot_delta::SnapshotDecoder::new(negotiation.snapshot_delta),
+                snapshot_decoder: crate::protocol::snapshot_delta::SnapshotDecoder::new(
+                    negotiation.snapshot_delta,
+                ),
                 negotiation,
                 health,
             },

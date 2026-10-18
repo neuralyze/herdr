@@ -623,7 +623,10 @@ fn terminal_session_observe(args: &[String]) -> std::io::Result<i32> {
 
 fn terminal_session_managed(args: &[String]) -> std::io::Result<i32> {
     let options = match parse_terminal_session_options(
-        args, TERMINAL_SESSION_MANAGED_USAGE, "managed", false,
+        args,
+        TERMINAL_SESSION_MANAGED_USAGE,
+        "managed",
+        false,
     )? {
         Ok(options) => options,
         Err(code) => return Ok(code),
@@ -1161,13 +1164,34 @@ mod tests {
     fn managed_terminal_options_accept_geometry_but_never_takeover() {
         let args = ["w1:p1", "--cols", "91", "--rows", "27"].map(String::from);
         let parsed = super::parse_terminal_session_options(
-            &args, super::TERMINAL_SESSION_MANAGED_USAGE, "managed", false,
-        ).unwrap();
-        let Ok(options) = parsed else { panic!("managed options") };
-        assert_eq!((options.target.as_str(), options.cols, options.rows, options.takeover), ("w1:p1", 91, 27, false));
+            &args,
+            super::TERMINAL_SESSION_MANAGED_USAGE,
+            "managed",
+            false,
+        )
+        .unwrap();
+        let Ok(options) = parsed else {
+            panic!("managed options")
+        };
+        assert_eq!(
+            (
+                options.target.as_str(),
+                options.cols,
+                options.rows,
+                options.takeover
+            ),
+            ("w1:p1", 91, 27, false)
+        );
         let args = ["w1:p1", "--takeover"].map(String::from);
-        assert!(matches!(super::parse_terminal_session_options(
-            &args, super::TERMINAL_SESSION_MANAGED_USAGE, "managed", false,
-        ).unwrap(), Err(2)));
+        assert!(matches!(
+            super::parse_terminal_session_options(
+                &args,
+                super::TERMINAL_SESSION_MANAGED_USAGE,
+                "managed",
+                false,
+            )
+            .unwrap(),
+            Err(2)
+        ));
     }
 }

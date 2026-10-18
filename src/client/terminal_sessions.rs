@@ -151,7 +151,10 @@ fn write_terminal_session_output(mut stream: LocalStream) -> io::Result<()> {
     }
 }
 
-fn write_terminal_frame(stdout: &mut impl io::Write, frame: &protocol::TerminalFrame) -> io::Result<()> {
+fn write_terminal_frame(
+    stdout: &mut impl io::Write,
+    frame: &protocol::TerminalFrame,
+) -> io::Result<()> {
     let encoded = base64::engine::general_purpose::STANDARD.encode(&frame.bytes);
     let line = serde_json::json!({
         "type": "terminal.frame",

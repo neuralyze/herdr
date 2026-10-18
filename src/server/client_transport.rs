@@ -185,7 +185,10 @@ impl ClientWriter {
         if !state.writer_alive {
             return Err(SendError(()));
         }
-        state.projection = Some(Arc::new(ClientProjection { frames, snapshot: None }));
+        state.projection = Some(Arc::new(ClientProjection {
+            frames,
+            snapshot: None,
+        }));
         Ok(())
     }
 
@@ -220,7 +223,11 @@ impl ClientWriter {
                 self.render.queue.pop(&mut state)
             };
             let Some(claimed) = claimed else { break };
-            let item = self.render.queue.materialize(claimed).expect("encode claimed test projection");
+            let item = self
+                .render
+                .queue
+                .materialize(claimed)
+                .expect("encode claimed test projection");
             match item {
                 ClientWriteItem::Control(data) | ClientWriteItem::Render(data) => frames.push(data),
                 ClientWriteItem::Presentation(projection, data, snapshot_frame) => {
@@ -266,7 +273,9 @@ impl ClientWriter {
                     ClientWriteItem::Control(data) => control.send(data).is_ok(),
                     ClientWriteItem::Render(data) => render.send(data).is_ok(),
                     ClientWriteItem::Presentation(projection, data, snapshot_frame) => {
-                        projection.iter().filter(|frame| !frame.is_empty())
+                        projection
+                            .iter()
+                            .filter(|frame| !frame.is_empty())
                             .all(|frame| control.send(frame.clone()).is_ok())
                             && (snapshot_frame.is_empty() || control.send(snapshot_frame).is_ok())
                             && (data.is_empty() || render.send(data).is_ok())
@@ -315,9 +324,7 @@ writer_handle!(ClientRenderWriter);
 impl ClientControlWriter {
     fn queue(queue: Arc<ClientWriterQueue>) -> Self {
         queue.add_sender();
-        Self {
-            queue,
-        }
+        Self { queue }
     }
 
     pub(crate) fn send(&self, data: Vec<u8>) -> Result<(), SendError<Vec<u8>>> {
@@ -328,9 +335,7 @@ impl ClientControlWriter {
 impl ClientRenderWriter {
     fn queue(queue: Arc<ClientWriterQueue>) -> Self {
         queue.add_sender();
-        Self {
-            queue,
-        }
+        Self { queue }
     }
 
     #[cfg(test)]
@@ -461,15 +466,26 @@ impl ClaimedWriteItem {
     fn materialize(self) -> io::Result<ClientWriteItem> {
         let (projection, base, allow_delta, surface) = match self {
             Self::Ready(item) => return Ok(item),
-            Self::Projection { projection, base, allow_delta, surface } =>
-                (projection, base, allow_delta, surface),
+            Self::Projection {
+                projection,
+                base,
+                allow_delta,
+                surface,
+            } => (projection, base, allow_delta, surface),
         };
-        let snapshot = projection.snapshot.as_deref().expect("claimed typed projection");
+        let snapshot = projection
+            .snapshot
+            .as_deref()
+            .expect("claimed typed projection");
         let message = protocol::endpoint::snapshot_message(snapshot, base.as_deref(), allow_delta)
             .map_err(io::Error::other)?;
         let mut snapshot_frame = Vec::new();
         protocol::write_message(&mut snapshot_frame, &message).map_err(io::Error::other)?;
-        Ok(ClientWriteItem::Presentation(projection, surface, snapshot_frame))
+        Ok(ClientWriteItem::Presentation(
+            projection,
+            surface,
+            snapshot_frame,
+        ))
     }
 }
 
@@ -498,7 +514,12 @@ impl ClientWriterQueue {
     }
 
     fn disconnect(&self) {
-        if let Some(stream) = self.disconnect.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        if let Some(stream) = self
+            .disconnect
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             #[cfg(unix)]
             let _ = crate::platform::shutdown_client_stream(&stream);
             #[cfg(windows)]
@@ -694,7 +715,9 @@ impl ClientWriterQueue {
             self.ready.notify_one();
             return Some(match item {
                 ClientWriteItem::Presentation(projection, data, snapshot_frame) => {
-                    let already_claimed = state.claimed_projection.as_ref()
+                    let already_claimed = state
+                        .claimed_projection
+                        .as_ref()
                         .is_some_and(|previous| Arc::ptr_eq(previous, &projection));
                     if already_claimed {
                         ClaimedWriteItem::Ready(ClientWriteItem::Render(data))
@@ -708,7 +731,11 @@ impl ClientWriterQueue {
                                 surface: data,
                             }
                         } else {
-                            ClaimedWriteItem::Ready(ClientWriteItem::Presentation(projection.clone(), data, snapshot_frame))
+                            ClaimedWriteItem::Ready(ClientWriteItem::Presentation(
+                                projection.clone(),
+                                data,
+                                snapshot_frame,
+                            ))
                         };
                         state.claimed_projection = Some(projection);
                         claimed
@@ -799,7 +826,10 @@ pub(crate) enum ServerEvent {
         writer: ClientWriter,
     },
     /// A client sent an input message.
-    ClientInput { client_id: u64, data: Vec<u8> },
+    ClientInput {
+        client_id: u64,
+        data: Vec<u8>,
+    },
     /// A client reported the one armed Kitty regular-file response.
     GraphicsTransmissionResult {
         client_id: u64,
@@ -832,7 +862,10 @@ pub(crate) enum ServerEvent {
         takeover: bool,
     },
     /// A client requested read-only observation of one terminal.
-    ClientObserveTerminal { client_id: u64, target: String },
+    ClientObserveTerminal {
+        client_id: u64,
+        target: String,
+    },
     /// A client requested writable control of one terminal.
     ClientControlTerminal {
         client_id: u64,
@@ -898,11 +931,20 @@ pub(crate) enum ServerEvent {
         update: crate::protocol::ClientHostThemeUpdate,
     },
     /// A client-owned shell reported whether its outer terminal has focus.
-    ClientShellFocus { client_id: u64, focused: bool },
+    ClientShellFocus {
+        client_id: u64,
+        focused: bool,
+    },
     /// A client-owned shell updated its local mouse-capture preference.
-    ClientShellMouseCapture { client_id: u64, enabled: bool },
+    ClientShellMouseCapture {
+        client_id: u64,
+        enabled: bool,
+    },
     /// The committed shell asks the server to replay presentation effects before input resumes.
-    ClientShellPresentationSync { client_id: u64, token: String },
+    ClientShellPresentationSync {
+        client_id: u64,
+        token: String,
+    },
     /// A client-owned shell invoked one endpoint operation through this connection.
     ClientShellEndpointRequest {
         client_id: u64,
@@ -926,11 +968,17 @@ pub(crate) enum ServerEvent {
         data: Vec<u8>,
     },
     /// A client detached gracefully.
-    ClientDetach { client_id: u64 },
+    ClientDetach {
+        client_id: u64,
+    },
     /// A client connection was lost.
-    ClientDisconnected { client_id: u64 },
+    ClientDisconnected {
+        client_id: u64,
+    },
     /// A client writer drained its render slot and can accept another render.
-    ClientWriterDrained { client_id: u64 },
+    ClientWriterDrained {
+        client_id: u64,
+    },
     /// Ctrl+C or external shutdown signal received.
     QuitSignal,
 }
@@ -1179,7 +1227,9 @@ pub(crate) fn handle_client_handshake(
             snapshot_delta = hello.supports_snapshot_delta();
             endpoint_welcome = Some(EndpointServerWelcome::compatible_for_hello(
                 crate::server::client_commands::supported_client_shell_method_names()
-                    .iter().map(|method| (*method).to_owned()).collect(),
+                    .iter()
+                    .map(|method| (*method).to_owned())
+                    .collect(),
                 &hello,
             ));
             (
@@ -1372,9 +1422,12 @@ fn client_writer_loop(
             ClientWriteItem::Presentation(projection, surface, snapshot_frame) => {
                 let _ =
                     server_event_tx.blocking_send(ServerEvent::ClientWriterDrained { client_id });
-                projection.iter().filter(|data| !data.is_empty())
+                projection
+                    .iter()
+                    .filter(|data| !data.is_empty())
                     .all(|data| write_framed_bytes(&mut stream, data))
-                    && (snapshot_frame.is_empty() || write_framed_bytes(&mut stream, &snapshot_frame))
+                    && (snapshot_frame.is_empty()
+                        || write_framed_bytes(&mut stream, &snapshot_frame))
                     && (surface.is_empty() || write_framed_bytes(&mut stream, &surface))
             }
         };
@@ -1960,18 +2013,30 @@ mod tests {
     #[test]
     fn terminal_session_boundary_keeps_claimed_partial_frame_and_drops_only_pending_old_frame() {
         let (writer, queue) = test_queue_writer();
-        let frame = |seq, byte| frame_server_message(&ServerMessage::Terminal(protocol::TerminalFrame {
-            seq, width: 80, height: 24, full: true, bytes: vec![byte; 1024],
-        }));
+        let frame = |seq, byte| {
+            frame_server_message(&ServerMessage::Terminal(protocol::TerminalFrame {
+                seq,
+                width: 80,
+                height: 24,
+                full: true,
+                bytes: vec![byte; 1024],
+            }))
+        };
         let old = frame(1, b'o');
         writer.render.try_send(old.clone()).unwrap();
-        let Some(ClientWriteItem::Render(in_flight)) = queue.recv() else { panic!("claimed old frame") };
+        let Some(ClientWriteItem::Render(in_flight)) = queue.recv() else {
+            panic!("claimed old frame")
+        };
         let split = in_flight.len() / 2;
         let mut delivered = in_flight[..split].to_vec();
         writer.render.try_send(frame(2, b'x')).unwrap();
         let state = protocol::endpoint::TerminalSessionState {
-            target: "w1:p1".into(), mode: protocol::endpoint::TerminalSessionMode::Control,
-            cols: 80, rows: 24, request_id: 1, error: None,
+            target: "w1:p1".into(),
+            mode: protocol::endpoint::TerminalSessionMode::Control,
+            cols: 80,
+            rows: 24,
+            request_id: 1,
+            error: None,
         };
         let mut boundary = frame_server_message(&ServerMessage::EndpointControl {
             kind: protocol::endpoint::TERMINAL_SESSION_STATE_KIND.into(),
@@ -1984,12 +2049,18 @@ mod tests {
         queue.lock_state().control_burst = CONTROL_BURST;
         writer.render.try_send(frame(4, b'z')).unwrap();
         delivered.extend_from_slice(&in_flight[split..]);
-        assert_eq!(delivered, old, "a partially written native frame remains intact");
+        assert_eq!(
+            delivered, old,
+            "a partially written native frame remains intact"
+        );
         assert_eq!(queue.recv(), Some(ClientWriteItem::Control(boundary)));
         assert_eq!(queue.recv(), Some(ClientWriteItem::Render(frame(4, b'z'))));
         let ServerMessage::Terminal(received) =
-            protocol::read_message::<_, ServerMessage>(&mut delivered.as_slice(), MAX_FRAME_SIZE).unwrap()
-        else { panic!() };
+            protocol::read_message::<_, ServerMessage>(&mut delivered.as_slice(), MAX_FRAME_SIZE)
+                .unwrap()
+        else {
+            panic!()
+        };
         assert_eq!(received.seq, 1);
         assert!(queue.lock_state().render.is_none());
     }
@@ -1999,10 +2070,15 @@ mod tests {
         let (writer, queue) = test_queue_writer();
         for id in 0..100_u64 {
             writer.render.try_send(vec![255]).unwrap();
-            writer.send_terminal_transition(id.to_le_bytes().to_vec()).unwrap();
+            writer
+                .send_terminal_transition(id.to_le_bytes().to_vec())
+                .unwrap();
         }
         for id in 0..100_u64 {
-            assert_eq!(queue.recv(), Some(ClientWriteItem::Control(id.to_le_bytes().to_vec())));
+            assert_eq!(
+                queue.recv(),
+                Some(ClientWriteItem::Control(id.to_le_bytes().to_vec()))
+            );
         }
         assert!(queue.lock_state().render.is_none());
     }
@@ -2014,47 +2090,71 @@ mod tests {
         let quit = Arc::new(AtomicBool::new(false));
         let handle = std::thread::spawn(move || client_read_loop(server, 7, &events, &quit));
         for mode in ["observe", "control"] {
-            protocol::write_message(&mut client, &ClientMessage::EndpointControl {
-                kind: protocol::endpoint::TERMINAL_SESSION_SET_MODE_KIND.into(),
-                data: format!(r#"{{"target":"w1:p1","mode":"{mode}","request_id":1,"cols":80,"rows":24}}"#),
-            }).unwrap();
+            protocol::write_message(
+                &mut client,
+                &ClientMessage::EndpointControl {
+                    kind: protocol::endpoint::TERMINAL_SESSION_SET_MODE_KIND.into(),
+                    data: format!(
+                        r#"{{"target":"w1:p1","mode":"{mode}","request_id":1,"cols":80,"rows":24}}"#
+                    ),
+                },
+            )
+            .unwrap();
         }
         protocol::write_message(&mut client, &ClientMessage::Input { data: vec![3, 27] }).unwrap();
         drop(client);
         for mode in ["observe", "control"] {
             let ServerEvent::ClientTerminalSessionMode { client_id: 7, data } =
                 recv_server_event(&mut receiver, "managed native request")
-            else { panic!("mode event") };
-            let request: protocol::endpoint::TerminalSessionRequest = serde_json::from_str(&data).unwrap();
+            else {
+                panic!("mode event")
+            };
+            let request: protocol::endpoint::TerminalSessionRequest =
+                serde_json::from_str(&data).unwrap();
             assert_eq!(serde_json::to_value(request.mode).unwrap(), mode);
         }
         assert!(matches!(recv_server_event(&mut receiver, "managed input"),
             ServerEvent::ClientInput { client_id: 7, data } if data == vec![3, 27]));
-        assert!(matches!(recv_server_event(&mut receiver, "managed EOF"),
-            ServerEvent::ClientDisconnected { client_id: 7 }));
+        assert!(matches!(
+            recv_server_event(&mut receiver, "managed EOF"),
+            ServerEvent::ClientDisconnected { client_id: 7 }
+        ));
         handle.join().unwrap().unwrap();
     }
 
     fn projection_frames(revision: u64, clear: bool) -> [Vec<u8>; 3] {
         let mut snapshot: protocol::ClientShellSnapshot = serde_json::from_str(include_str!(
             "../../tests/fixtures/endpoint-snapshot-v1.json"
-        )).unwrap();
+        ))
+        .unwrap();
         snapshot.revision = revision;
         snapshot.agent_view_label = (!clear).then(|| "current".into());
         let view = crate::api::schema::AgentViewSetParams {
-            source: "queue-test".into(), label: Some("current".into()),
-            filter: None, sort: Vec::new(),
+            source: "queue-test".into(),
+            label: Some("current".into()),
+            filter: None,
+            sort: Vec::new(),
         };
         let completions = protocol::endpoint::EndpointAgentCompletions {
-            boot_id: snapshot.boot_id.clone(), revision,
+            boot_id: snapshot.boot_id.clone(),
+            revision,
             completions: [("first".into(), 42), ("second".into(), 99)].into(),
         };
         [
-            frame_server_message(&protocol::endpoint::agent_view_projection_message(
-                &snapshot.boot_id, revision, (!clear).then_some(&view),
-            ).unwrap()),
-            frame_server_message(&protocol::endpoint::agent_completions_message(&completions).unwrap()),
-            frame_server_message(&protocol::endpoint::snapshot_message(&snapshot, None, false).unwrap()),
+            frame_server_message(
+                &protocol::endpoint::agent_view_projection_message(
+                    &snapshot.boot_id,
+                    revision,
+                    (!clear).then_some(&view),
+                )
+                .unwrap(),
+            ),
+            frame_server_message(
+                &protocol::endpoint::agent_completions_message(&completions).unwrap(),
+            ),
+            frame_server_message(
+                &protocol::endpoint::snapshot_message(&snapshot, None, false).unwrap(),
+            ),
         ]
     }
     #[test]
@@ -2067,48 +2167,86 @@ mod tests {
             };
             let mut snapshot: protocol::ClientShellSnapshot = serde_json::from_str(include_str!(
                 "../../tests/fixtures/endpoint-snapshot-v1.json"
-            )).unwrap();
+            ))
+            .unwrap();
             snapshot.revision = 1;
             let original = snapshot.clone();
-            writer.set_shell_projection([vec![1], vec![2]], Arc::new(snapshot.clone())).unwrap();
+            writer
+                .set_shell_projection([vec![1], vec![2]], Arc::new(snapshot.clone()))
+                .unwrap();
             writer.send_projection().unwrap();
-            let Some(ClientWriteItem::Presentation(_, _, initial_snapshot)) = queue.recv() else { panic!() };
+            let Some(ClientWriteItem::Presentation(_, _, initial_snapshot)) = queue.recv() else {
+                panic!()
+            };
             let ServerMessage::EndpointControl { kind, .. } =
-                protocol::read_message::<_, ServerMessage>(&mut initial_snapshot.as_slice(), MAX_FRAME_SIZE).unwrap()
-            else { panic!() };
+                protocol::read_message::<_, ServerMessage>(
+                    &mut initial_snapshot.as_slice(),
+                    MAX_FRAME_SIZE,
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
             assert_eq!(kind, protocol::endpoint::ENDPOINT_SNAPSHOT_KIND);
             let mut previous = std::sync::Weak::new();
             for revision in 2..=10_001 {
                 snapshot.revision = revision;
-                snapshot.agent_view_label = (revision != 10_001).then(|| format!("view {revision}"));
-                writer.set_shell_projection([vec![1], vec![2]], Arc::new(snapshot.clone())).unwrap();
+                snapshot.agent_view_label =
+                    (revision != 10_001).then(|| format!("view {revision}"));
+                writer
+                    .set_shell_projection([vec![1], vec![2]], Arc::new(snapshot.clone()))
+                    .unwrap();
                 writer.send_projection().unwrap();
-                assert!(previous.upgrade().is_none(), "replaced inventory must be released");
+                assert!(
+                    previous.upgrade().is_none(),
+                    "replaced inventory must be released"
+                );
                 let state = queue.lock_state();
                 assert!(state.control.is_empty() && state.ordered.is_empty());
                 assert_eq!(state.claimed_snapshot.as_ref().unwrap().revision, 1);
-                let Some(ClientWriteItem::Presentation(pending, _, snapshot_frame)) = &state.render else { panic!() };
+                let Some(ClientWriteItem::Presentation(pending, _, snapshot_frame)) = &state.render
+                else {
+                    panic!()
+                };
                 assert!(snapshot_frame.is_empty());
                 assert!(pending[2].is_empty(), "do not encode replaceable snapshots");
                 assert_eq!(Arc::strong_count(pending), 2);
                 previous = Arc::downgrade(pending);
             }
-            let Some(ClientWriteItem::Presentation(_, _, latest_snapshot)) = queue.recv() else { panic!() };
+            let Some(ClientWriteItem::Presentation(_, _, latest_snapshot)) = queue.recv() else {
+                panic!()
+            };
             let ServerMessage::EndpointControl { kind, data } =
-                protocol::read_message::<_, ServerMessage>(&mut latest_snapshot.as_slice(), MAX_FRAME_SIZE).unwrap()
-            else { panic!() };
+                protocol::read_message::<_, ServerMessage>(
+                    &mut latest_snapshot.as_slice(),
+                    MAX_FRAME_SIZE,
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
             if allow_delta {
                 assert_eq!(kind, protocol::endpoint::SNAPSHOT_DELTA_CODEC_V1);
-                let delta: protocol::snapshot_delta::SnapshotDelta = serde_json::from_str(&data).unwrap();
+                let delta: protocol::snapshot_delta::SnapshotDelta =
+                    serde_json::from_str(&data).unwrap();
                 assert_eq!(delta.base_revision, 1);
-                assert_eq!(protocol::snapshot_delta::apply_snapshot_delta(&original, delta).unwrap(), snapshot);
+                assert_eq!(
+                    protocol::snapshot_delta::apply_snapshot_delta(&original, delta).unwrap(),
+                    snapshot
+                );
                 assert!(latest_snapshot.len() * 4 < initial_snapshot.len());
             } else {
                 assert_eq!(kind, protocol::endpoint::ENDPOINT_SNAPSHOT_KIND);
-                assert_eq!(serde_json::from_str::<protocol::ClientShellSnapshot>(&data).unwrap(), snapshot);
+                assert_eq!(
+                    serde_json::from_str::<protocol::ClientShellSnapshot>(&data).unwrap(),
+                    snapshot
+                );
             }
             writer.test_close();
-            assert!(queue.lock_state().claimed_snapshot.is_none(), "disconnect drops every base");
+            assert!(
+                queue.lock_state().claimed_snapshot.is_none(),
+                "disconnect drops every base"
+            );
         }
     }
 
@@ -2121,28 +2259,44 @@ mod tests {
         };
         let mut snapshot: protocol::ClientShellSnapshot = serde_json::from_str(include_str!(
             "../../tests/fixtures/endpoint-snapshot-v1.json"
-        )).unwrap();
+        ))
+        .unwrap();
         snapshot.revision = 1;
         snapshot.agent_view_label = Some("current".into());
         snapshot.server_keybindings_toml = Some("# large claimed configuration\n".repeat(4_000));
         let [view, completions, _] = projection_frames(1, false);
         let companion_addresses = (view.as_ptr() as usize, completions.as_ptr() as usize);
-        writer.set_shell_projection([view, completions], Arc::new(snapshot.clone())).unwrap();
-        let ServerMessage::PaneSurface(surface) =
-            protocol::read_message::<_, ServerMessage>(&mut test_surface_frame(1, "A").as_slice(), MAX_FRAME_SIZE).unwrap()
-        else { panic!("initial surface") };
-        let mut render_state = crate::server::render_stream::ClientRenderState::new(RenderEncoding::SemanticFrame);
+        writer
+            .set_shell_projection([view, completions], Arc::new(snapshot.clone()))
+            .unwrap();
+        let ServerMessage::PaneSurface(surface) = protocol::read_message::<_, ServerMessage>(
+            &mut test_surface_frame(1, "A").as_slice(),
+            MAX_FRAME_SIZE,
+        )
+        .unwrap() else {
+            panic!("initial surface")
+        };
+        let mut render_state =
+            crate::server::render_stream::ClientRenderState::new(RenderEncoding::SemanticFrame);
         render_state.enable_surface_delta(true);
         let prepared = render_state.prepare_pane_surface(surface).unwrap();
         let initial_message = prepared.message().clone();
-        let initial_token = writer.render.try_send_tracked(frame_server_message(&initial_message)).unwrap();
+        let initial_token = writer
+            .render
+            .try_send_tracked(frame_server_message(&initial_message))
+            .unwrap();
 
         let (entered, entered_rx) = std::sync::mpsc::channel();
         let resume = Arc::new(std::sync::Barrier::new(2));
-        queue.projection_encode_gate.set((entered, resume.clone(), AtomicBool::new(false))).unwrap();
+        queue
+            .projection_encode_gate
+            .set((entered, resume.clone(), AtomicBool::new(false)))
+            .unwrap();
         let drain = queue.clone();
         let consumer = std::thread::spawn(move || drain.recv().unwrap());
-        entered_rx.recv_timeout(Duration::from_secs(2)).expect("writer reaches unlocked encoding");
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("writer reaches unlocked encoding");
         assert!(initial_token.load(Ordering::Acquire));
         // Force claim between tracked enqueue and the server's baseline commit.
         render_state.commit_replaceable_frame(prepared, initial_token);
@@ -2151,29 +2305,35 @@ mod tests {
         let (finished, finished_rx) = std::sync::mpsc::channel();
         let producer_writer = writer.clone();
         let producer = std::thread::spawn(move || {
-            let clipboard = frame_server_message(&ServerMessage::Clipboard { data: "reliable".into() });
+            let clipboard = frame_server_message(&ServerMessage::Clipboard {
+                data: "reliable".into(),
+            });
             producer_writer.control.send(clipboard.clone()).unwrap();
             let mut expected_snapshot = snapshot;
             for revision in [2, 3] {
                 expected_snapshot.revision = revision;
                 expected_snapshot.config_diagnostic = Some(format!("revision {revision}"));
                 let [view, completions, _] = projection_frames(revision, false);
-                producer_writer.set_shell_projection(
-                    [view, completions], Arc::new(expected_snapshot.clone()),
-                ).unwrap();
+                producer_writer
+                    .set_shell_projection([view, completions], Arc::new(expected_snapshot.clone()))
+                    .unwrap();
                 let mut next = claimed_surface.clone();
                 next.projection_revision = revision;
                 next.frame.cells[0].symbol = format!("visible-{revision}");
                 let prepared = render_state.prepare_pane_surface(next).unwrap();
-                let token = producer_writer.render.try_send_tracked(
-                    frame_server_message(prepared.message()),
-                ).unwrap();
+                let token = producer_writer
+                    .render
+                    .try_send_tracked(frame_server_message(prepared.message()))
+                    .unwrap();
                 render_state.commit_replaceable_frame(prepared, token);
                 if revision == 2 {
                     assert!(producer_writer.discard_pending_render());
                     render_state.discard_pending_frame();
-                    assert_eq!(render_state.last_pane_surface(), Some(&claimed_surface),
-                        "replacement must keep a frame claimed before its server commit");
+                    assert_eq!(
+                        render_state.last_pane_surface(),
+                        Some(&claimed_surface),
+                        "replacement must keep a frame claimed before its server commit"
+                    );
                 }
             }
             let expected_surface = render_state.last_pane_surface().unwrap().clone();
@@ -2182,33 +2342,60 @@ mod tests {
         });
         // This is a liveness deadline, not a serialization performance threshold.
         // Always release the encoder before asserting, including a locking regression.
-        let producer_finished_while_encoding = finished_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        let producer_finished_while_encoding =
+            finished_rx.recv_timeout(Duration::from_secs(2)).is_ok();
         resume.wait();
         let first = consumer.join().unwrap();
         let (expected_snapshot, expected_surface, clipboard) = producer.join().unwrap();
-        assert!(producer_finished_while_encoding, "encoding must not hold the producer queue mutex");
-        let ClientWriteItem::Presentation(first_projection, first_surface, first_snapshot) = first else { panic!() };
+        assert!(
+            producer_finished_while_encoding,
+            "encoding must not hold the producer queue mutex"
+        );
+        let ClientWriteItem::Presentation(first_projection, first_surface, first_snapshot) = first
+        else {
+            panic!()
+        };
         assert_eq!(
-            (first_projection[0].as_ptr() as usize, first_projection[1].as_ptr() as usize),
+            (
+                first_projection[0].as_ptr() as usize,
+                first_projection[1].as_ptr() as usize
+            ),
             companion_addresses,
             "claim must borrow the original immutable companion buffers",
         );
         let mut snapshot_decoder = protocol::snapshot_delta::SnapshotDecoder::new(true);
-        let decode_snapshot = |decoder: &mut protocol::snapshot_delta::SnapshotDecoder, mut frame: &[u8]| {
+        let decode_snapshot = |decoder: &mut protocol::snapshot_delta::SnapshotDecoder,
+                               mut frame: &[u8]| {
             let ServerMessage::EndpointControl { kind, data } =
                 protocol::read_message::<_, ServerMessage>(&mut frame, MAX_FRAME_SIZE).unwrap()
-            else { panic!() };
+            else {
+                panic!()
+            };
             decoder.decode(&kind, &data).unwrap().unwrap()
         };
         let _ = decode_snapshot(&mut snapshot_decoder, &first_snapshot);
         let mut surface_decoder = protocol::surface_reuse::Decoder::new(true, false);
-        let first_surface: ServerMessage = protocol::read_message(&mut first_surface.as_slice(), MAX_FRAME_SIZE).unwrap();
-        assert_eq!(surface_decoder.decode(first_surface).unwrap(), ServerMessage::PaneSurface(expected_claimed));
+        let first_surface: ServerMessage =
+            protocol::read_message(&mut first_surface.as_slice(), MAX_FRAME_SIZE).unwrap();
+        assert_eq!(
+            surface_decoder.decode(first_surface).unwrap(),
+            ServerMessage::PaneSurface(expected_claimed)
+        );
         assert_eq!(queue.recv(), Some(ClientWriteItem::Control(clipboard)));
-        let Some(ClientWriteItem::Presentation(_, latest_surface, latest_snapshot)) = queue.recv() else { panic!() };
-        assert_eq!(*decode_snapshot(&mut snapshot_decoder, &latest_snapshot), expected_snapshot);
-        let latest_surface: ServerMessage = protocol::read_message(&mut latest_surface.as_slice(), MAX_FRAME_SIZE).unwrap();
-        assert_eq!(surface_decoder.decode(latest_surface).unwrap(), ServerMessage::PaneSurface(expected_surface));
+        let Some(ClientWriteItem::Presentation(_, latest_surface, latest_snapshot)) = queue.recv()
+        else {
+            panic!()
+        };
+        assert_eq!(
+            *decode_snapshot(&mut snapshot_decoder, &latest_snapshot),
+            expected_snapshot
+        );
+        let latest_surface: ServerMessage =
+            protocol::read_message(&mut latest_surface.as_slice(), MAX_FRAME_SIZE).unwrap();
+        assert_eq!(
+            surface_decoder.decode(latest_surface).unwrap(),
+            ServerMessage::PaneSurface(expected_surface)
+        );
     }
 
     #[test]
@@ -2216,7 +2403,8 @@ mod tests {
         let (writer, queue) = test_queue_writer();
         let snapshot: protocol::ClientShellSnapshot = serde_json::from_str(include_str!(
             "../../tests/fixtures/endpoint-snapshot-v1.json"
-        )).unwrap();
+        ))
+        .unwrap();
         for byte in 0..(CONTROL_BURST as u8 + 4) {
             writer.control.send(vec![byte]).unwrap();
         }
@@ -2240,20 +2428,27 @@ mod tests {
         assert!(claimed.load(Ordering::Acquire));
         let ordered = writer.render.try_send_tracked(vec![3]).unwrap();
         writer.render.send_ordered(vec![4]).unwrap();
-        assert!(ordered.load(Ordering::Acquire), "ordered work cannot be discarded");
+        assert!(
+            ordered.load(Ordering::Acquire),
+            "ordered work cannot be discarded"
+        );
         assert_eq!(queue.recv(), Some(ClientWriteItem::Render(vec![3])));
         assert_eq!(queue.recv(), Some(ClientWriteItem::Render(vec![4])));
     }
-
 
     #[test]
     fn projection_backlog_retains_only_latest_complete_clear_and_completions() {
         let (writer, queue) = test_queue_writer();
         let mut previous = std::sync::Weak::new();
         for revision in 1..=10_000 {
-            writer.set_projection(projection_frames(revision, revision == 10_000)).unwrap();
+            writer
+                .set_projection(projection_frames(revision, revision == 10_000))
+                .unwrap();
             writer.send_projection().unwrap();
-            assert!(previous.upgrade().is_none(), "replaced projection payload must be released");
+            assert!(
+                previous.upgrade().is_none(),
+                "replaced projection payload must be released"
+            );
             let state = queue.lock_state();
             assert!(state.control.is_empty());
             assert_eq!(state.control_bytes, 0);
@@ -2263,7 +2458,11 @@ mod tests {
             };
             assert!(surface.is_empty());
             assert!(Arc::ptr_eq(pending, state.projection.as_ref().unwrap()));
-            assert_eq!(Arc::strong_count(pending), 2, "no hidden projection backlog");
+            assert_eq!(
+                Arc::strong_count(pending),
+                2,
+                "no hidden projection backlog"
+            );
             assert!(pending.iter().map(Vec::len).sum::<usize>() < 64 * 1024);
             previous = Arc::downgrade(pending);
         }
@@ -2271,19 +2470,28 @@ mod tests {
             panic!("latest complete projection");
         };
         let mut messages = frames.iter().map(|bytes| {
-            protocol::read_message::<_, ServerMessage>(&mut bytes.as_slice(), MAX_FRAME_SIZE).unwrap()
+            protocol::read_message::<_, ServerMessage>(&mut bytes.as_slice(), MAX_FRAME_SIZE)
+                .unwrap()
         });
-        let ServerMessage::EndpointControl { data, .. } = messages.next().unwrap() else { panic!() };
-        let view: protocol::endpoint::EndpointAgentViewProjection = serde_json::from_str(&data).unwrap();
+        let ServerMessage::EndpointControl { data, .. } = messages.next().unwrap() else {
+            panic!()
+        };
+        let view: protocol::endpoint::EndpointAgentViewProjection =
+            serde_json::from_str(&data).unwrap();
         assert_eq!(view.revision, 10_000);
         assert!(view.view.is_none());
-        let ServerMessage::EndpointControl { data, .. } = messages.next().unwrap() else { panic!() };
-        let completions: protocol::endpoint::EndpointAgentCompletions = serde_json::from_str(&data).unwrap();
+        let ServerMessage::EndpointControl { data, .. } = messages.next().unwrap() else {
+            panic!()
+        };
+        let completions: protocol::endpoint::EndpointAgentCompletions =
+            serde_json::from_str(&data).unwrap();
         assert_eq!(completions.boot_id, view.boot_id);
         assert_eq!(completions.revision, view.revision);
         assert_eq!(completions.completions["first"], 42);
         assert_eq!(completions.completions["second"], 99);
-        let ServerMessage::EndpointControl { data, .. } = messages.next().unwrap() else { panic!() };
+        let ServerMessage::EndpointControl { data, .. } = messages.next().unwrap() else {
+            panic!()
+        };
         let snapshot: protocol::ClientShellSnapshot = serde_json::from_str(&data).unwrap();
         assert_eq!(snapshot.boot_id, view.boot_id);
         assert_eq!(snapshot.revision, view.revision);
@@ -2296,17 +2504,27 @@ mod tests {
         let mut expected = VecDeque::new();
         for number in 0..64 {
             let message = match number % 5 {
-                0 => ServerMessage::Clipboard { data: number.to_string() },
+                0 => ServerMessage::Clipboard {
+                    data: number.to_string(),
+                },
                 1 => ServerMessage::Notify {
                     kind: protocol::NotifyKind::Toast,
-                    message: number.to_string(), body: None,
+                    message: number.to_string(),
+                    body: None,
                 },
                 2 => ServerMessage::ClientShellEndpointResponseChunk {
-                    boot_id: "boot".into(), request_id: "request".into(),
-                    final_chunk: number == 62, data: vec![number as u8],
+                    boot_id: "boot".into(),
+                    request_id: "request".into(),
+                    final_chunk: number == 62,
+                    data: vec![number as u8],
                 },
-                3 => ServerMessage::ClientShellKeyboardReportAll { enabled: number % 2 == 0 },
-                _ => ServerMessage::MouseCapture { enabled: number % 2 == 0, sgr_pixels: false },
+                3 => ServerMessage::ClientShellKeyboardReportAll {
+                    enabled: number % 2 == 0,
+                },
+                _ => ServerMessage::MouseCapture {
+                    enabled: number % 2 == 0,
+                    sgr_pixels: false,
+                },
             };
             let frame = frame_server_message(&message);
             expected.push_back(frame.clone());
@@ -2357,7 +2575,10 @@ mod tests {
         drop(state);
         assert_eq!(queue.recv(), None);
         healthy.control.send(vec![7]).unwrap();
-        assert_eq!(healthy_queue.recv(), Some(ClientWriteItem::Control(vec![7])));
+        assert_eq!(
+            healthy_queue.recv(),
+            Some(ClientWriteItem::Control(vec![7]))
+        );
     }
 
     #[cfg(unix)]
@@ -2381,20 +2602,33 @@ mod tests {
             client_writer_loop(write_stream, 77, worker_queue, events);
             write_done_tx.send(()).unwrap();
         });
-        assert!(matches!(event_rx.blocking_recv(), Some(ServerEvent::ClientWriterDrained { client_id: 77 })));
+        assert!(matches!(
+            event_rx.blocking_recv(),
+            Some(ServerEvent::ClientWriterDrained { client_id: 77 })
+        ));
         for _ in 0..MAX_PENDING_CONTROL_ITEMS {
             writer.control.send(vec![1]).unwrap();
         }
         assert!(writer.control.send(vec![2]).is_err());
-        read_done.recv_timeout(Duration::from_secs(2)).expect("overflow wakes blocked reader");
-        write_done.recv_timeout(Duration::from_secs(2)).expect("overflow wakes blocked writer");
+        read_done
+            .recv_timeout(Duration::from_secs(2))
+            .expect("overflow wakes blocked reader");
+        write_done
+            .recv_timeout(Duration::from_secs(2))
+            .expect("overflow wakes blocked writer");
         reader.join().unwrap();
         worker.join().unwrap();
         assert_eq!(queue.lock_state().control_bytes, 0);
-        assert!(matches!(writer.render.try_send(vec![3]), Err(TrySendError::Disconnected(_))));
+        assert!(matches!(
+            writer.render.try_send(vec![3]),
+            Err(TrySendError::Disconnected(_))
+        ));
         let (healthy, healthy_queue) = test_queue_writer();
         healthy.control.send(vec![4]).unwrap();
-        assert_eq!(healthy_queue.recv(), Some(ClientWriteItem::Control(vec![4])));
+        assert_eq!(
+            healthy_queue.recv(),
+            Some(ClientWriteItem::Control(vec![4]))
+        );
     }
 
     fn test_surface_frame(revision: u64, symbol: &str) -> Vec<u8> {
@@ -2406,7 +2640,10 @@ mod tests {
             projection_revision: revision,
             surface_revision: revision,
             frame: protocol::FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]),
-            panes: Vec::new(), splits: Vec::new(), popup: None, graphics: Default::default(),
+            panes: Vec::new(),
+            splits: Vec::new(),
+            popup: None,
+            graphics: Default::default(),
         }))
     }
 
@@ -2417,29 +2654,50 @@ mod tests {
             bytes: b"\x1b_Ga=T,f=32,s=1,v=1,i=7;/wAA/w==\x1b\\".to_vec(),
         });
         let mut direct = frame_server_message(&ServerMessage::GraphicsFile {
-            path: "/private-test/image.rgba".into(), expected_len: 4,
-            image_id: 7, transfer_id: 1, leading: Vec::new(),
-            control: "a=T,f=32,s=1,v=1,i=7".into(), surface_asset: None,
+            path: "/private-test/image.rgba".into(),
+            expected_len: 4,
+            image_id: 7,
+            transfer_id: 1,
+            leading: Vec::new(),
+            control: "a=T,f=32,s=1,v=1,i=7".into(),
+            surface_asset: None,
         });
         direct.extend(frame_server_message(&ServerMessage::EndpointControl {
-            kind: protocol::endpoint::PRESENTATION_EFFECTS_READY_KIND.into(), data: "fence".into(),
+            kind: protocol::endpoint::PRESENTATION_EFFECTS_READY_KIND.into(),
+            data: "fence".into(),
         }));
         let resync = test_surface_frame(2, "B");
         writer.set_projection(projection_frames(1, false)).unwrap();
         writer.render.try_send_protected(inline.clone()).unwrap();
-        assert!(!writer.discard_pending_render(), "inline asset delivery cannot be rolled back");
+        assert!(
+            !writer.discard_pending_render(),
+            "inline asset delivery cannot be rolled back"
+        );
         writer.render.send_ordered(direct.clone()).unwrap();
         for _ in 0..CONTROL_BURST {
-            writer.control.send(frame_server_message(&ServerMessage::ReloadSoundConfig)).unwrap();
+            writer
+                .control
+                .send(frame_server_message(&ServerMessage::ReloadSoundConfig))
+                .unwrap();
         }
         let retired = frame_server_message(&ServerMessage::GraphicsTransmissionRetired {
-            transfer_id: 1, image_id: 7,
+            transfer_id: 1,
+            image_id: 7,
         });
         writer.control.send(retired.clone()).unwrap();
         for _ in 0..CONTROL_BURST {
-            assert_eq!(queue.recv(), Some(ClientWriteItem::Control(frame_server_message(&ServerMessage::ReloadSoundConfig))));
+            assert_eq!(
+                queue.recv(),
+                Some(ClientWriteItem::Control(frame_server_message(
+                    &ServerMessage::ReloadSoundConfig
+                )))
+            );
         }
-        assert_eq!(queue.recv(), Some(ClientWriteItem::Control(retired)), "retirement must precede queued file despite control burst limit");
+        assert_eq!(
+            queue.recv(),
+            Some(ClientWriteItem::Control(retired)),
+            "retirement must precede queued file despite control burst limit"
+        );
         writer.set_projection(projection_frames(2, true)).unwrap();
         writer.render.try_send(test_surface_frame(2, "X")).unwrap();
         assert!(writer.discard_pending_render());
@@ -2449,9 +2707,16 @@ mod tests {
             let surface = match item {
                 ClientWriteItem::Presentation(frames, data, _) => {
                     let ServerMessage::EndpointControl { data: snapshot, .. } =
-                        protocol::read_message::<_, ServerMessage>(&mut frames[2].as_slice(), MAX_FRAME_SIZE).unwrap()
-                    else { panic!() };
-                    let snapshot: protocol::ClientShellSnapshot = serde_json::from_str(&snapshot).unwrap();
+                        protocol::read_message::<_, ServerMessage>(
+                            &mut frames[2].as_slice(),
+                            MAX_FRAME_SIZE,
+                        )
+                        .unwrap()
+                    else {
+                        panic!()
+                    };
+                    let snapshot: protocol::ClientShellSnapshot =
+                        serde_json::from_str(&snapshot).unwrap();
                     assert_eq!(snapshot.revision, revision);
                     data
                 }
@@ -2469,19 +2734,35 @@ mod tests {
         let (mut client, server, _path) = local_stream_pair("inflight-presentation");
         let LocalStream::UdSocket(socket) = &server;
         let size: libc::c_int = 4096;
-        assert_eq!(unsafe {
-            libc::setsockopt(socket.inner().as_raw_fd(), libc::SOL_SOCKET, libc::SO_SNDBUF,
-                (&size as *const libc::c_int).cast(), std::mem::size_of_val(&size) as libc::socklen_t)
-        }, 0);
-        client.set_recv_timeout(Some(Duration::from_secs(2))).unwrap();
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    socket.inner().as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&size as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&size) as libc::socklen_t,
+                )
+            },
+            0
+        );
+        client
+            .set_recv_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         let (writer, queue) = test_queue_writer();
         queue.set_disconnect_stream(server.try_clone().unwrap());
         writer.set_projection(projection_frames(1, false)).unwrap();
         writer.render.try_send(test_surface_frame(1, "A")).unwrap();
         let (events, mut event_rx) = mpsc::channel(8);
         let worker = std::thread::spawn(move || client_writer_loop(server, 88, queue, events));
-        assert!(matches!(event_rx.blocking_recv(), Some(ServerEvent::ClientWriterDrained { client_id: 88 })));
-        assert!(!writer.discard_pending_render(), "a claimed/partial frame is never replaced");
+        assert!(matches!(
+            event_rx.blocking_recv(),
+            Some(ServerEvent::ClientWriterDrained { client_id: 88 })
+        ));
+        assert!(
+            !writer.discard_pending_render(),
+            "a claimed/partial frame is never replaced"
+        );
         writer.set_projection(projection_frames(2, true)).unwrap();
         writer.render.try_send(test_surface_frame(2, "B")).unwrap();
         for revision in [1, 2] {
@@ -2490,19 +2771,29 @@ mod tests {
                 protocol::endpoint::AGENT_COMPLETIONS_KIND,
                 protocol::endpoint::ENDPOINT_SNAPSHOT_KIND,
             ] {
-                let message: ServerMessage = protocol::read_message(&mut client, MAX_FRAME_SIZE).unwrap();
-                let ServerMessage::EndpointControl { kind: actual, data } = message else { panic!() };
+                let message: ServerMessage =
+                    protocol::read_message(&mut client, MAX_FRAME_SIZE).unwrap();
+                let ServerMessage::EndpointControl { kind: actual, data } = message else {
+                    panic!()
+                };
                 assert_eq!(actual, kind);
                 let projection: serde_json::Value = serde_json::from_str(&data).unwrap();
                 assert_eq!(projection["boot_id"], "boot-v1");
                 assert_eq!(projection["revision"], revision);
             }
-            let message: ServerMessage = protocol::read_message(&mut client, MAX_FRAME_SIZE).unwrap();
-            let ServerMessage::PaneSurface(surface) = message else { panic!() };
+            let message: ServerMessage =
+                protocol::read_message(&mut client, MAX_FRAME_SIZE).unwrap();
+            let ServerMessage::PaneSurface(surface) = message else {
+                panic!()
+            };
             assert_eq!(surface.projection_revision, revision);
             assert_eq!(surface.boot_id, "boot-v1");
             let expected = if revision == 1 { "A" } else { "B" };
-            assert!(surface.frame.cells.iter().all(|cell| cell.symbol == expected));
+            assert!(surface
+                .frame
+                .cells
+                .iter()
+                .all(|cell| cell.symbol == expected));
         }
         drop(writer);
         worker.join().unwrap();
@@ -2970,49 +3261,77 @@ mod tests {
     #[cfg(unix)]
     fn assert_bounded_client_writer_socket(writer: &ClientWriter) {
         use std::os::fd::AsRawFd as _;
-        let guard = writer.render.queue.disconnect.lock().unwrap_or_else(|p| p.into_inner());
+        let guard = writer
+            .render
+            .queue
+            .disconnect
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let LocalStream::UdSocket(socket) = guard.as_ref().expect("registered writer socket");
         let mut bytes: libc::c_int = 0;
         let mut len = std::mem::size_of_val(&bytes) as libc::socklen_t;
-        assert_eq!(unsafe {
-            libc::getsockopt(
-                socket.inner().as_raw_fd(), libc::SOL_SOCKET, libc::SO_SNDBUF,
-                (&mut bytes as *mut libc::c_int).cast(), &mut len,
-            )
-        }, 0);
+        assert_eq!(
+            unsafe {
+                libc::getsockopt(
+                    socket.inner().as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&mut bytes as *mut libc::c_int).cast(),
+                    &mut len,
+                )
+            },
+            0
+        );
         #[cfg(target_os = "linux")]
-        assert_eq!(bytes, 2 * CLIENT_SEND_BUFFER_BYTES, "Linux reports twice the requested send budget");
+        assert_eq!(
+            bytes,
+            2 * CLIENT_SEND_BUFFER_BYTES,
+            "Linux reports twice the requested send budget"
+        );
         #[cfg(not(target_os = "linux"))]
-        assert!(bytes > 0 && bytes <= 2 * CLIENT_SEND_BUFFER_BYTES, "bounded Unix send buffer: {bytes}");
-        assert_eq!(socket.inner().write_timeout().unwrap(), None,
-            "normal writers must not disconnect regularly slow readers");
+        assert!(
+            bytes > 0 && bytes <= 2 * CLIENT_SEND_BUFFER_BYTES,
+            "bounded Unix send buffer: {bytes}"
+        );
+        assert_eq!(
+            socket.inner().write_timeout().unwrap(),
+            None,
+            "normal writers must not disconnect regularly slow readers"
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn shell_handshake_bounds_kernel_backlog_without_truncating_large_frame() {
         let (mut client, server, _path) = local_stream_pair("bounded-writer-handshake");
-        client.set_recv_timeout(Some(Duration::from_secs(5))).unwrap();
+        client
+            .set_recv_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let (events, mut event_rx) = mpsc::channel(8);
         let should_quit = Arc::new(AtomicBool::new(false));
         let reader_quit = should_quit.clone();
-        let reader = std::thread::spawn(move || {
-            handle_client_handshake(server, 91, &events, &reader_quit)
-        });
+        let reader =
+            std::thread::spawn(move || handle_client_handshake(server, 91, &events, &reader_quit));
         protocol::write_message(&mut client, &endpoint_hello(80, 24)).unwrap();
         let welcome: ServerMessage = protocol::read_message(&mut client, MAX_FRAME_SIZE).unwrap();
         assert!(endpoint_welcome(welcome).error.is_none());
-        let ServerEvent::ClientShellConnected { writer, .. } = event_rx.blocking_recv().unwrap() else {
+        let ServerEvent::ClientShellConnected { writer, .. } = event_rx.blocking_recv().unwrap()
+        else {
             panic!("real shell writer must be registered");
         };
         assert_bounded_client_writer_socket(&writer);
-        let message = ServerMessage::Clipboard { data: "YWFh".repeat(256 * 1024) };
+        let message = ServerMessage::Clipboard {
+            data: "YWFh".repeat(256 * 1024),
+        };
         let framed = frame_server_message(&message);
         assert!(framed.len() > 100 * CLIENT_SEND_BUFFER_BYTES as usize);
         assert!(framed.len() <= MAX_FRAME_SIZE);
         writer.control.send(framed).unwrap();
         let delivered: ServerMessage = protocol::read_message(&mut client, MAX_FRAME_SIZE).unwrap();
-        assert_eq!(delivered, message, "frame much larger than socket budget must arrive intact");
+        assert_eq!(
+            delivered, message,
+            "frame much larger than socket budget must arrive intact"
+        );
         drop(writer);
         drop(client);
         should_quit.store(true, Ordering::Release);
@@ -3023,30 +3342,47 @@ mod tests {
     fn shell_handshake_selects_snapshot_delta_only_when_explicitly_offered() {
         for offered in [false, true] {
             let (mut client, server, _path) = local_stream_pair("snapshot-codec-handshake");
-            client.set_recv_timeout(Some(Duration::from_secs(2))).unwrap();
+            client
+                .set_recv_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
             let (events, mut event_rx) = mpsc::channel(4);
             let quit = Arc::new(AtomicBool::new(false));
             let reader_quit = quit.clone();
             let worker = std::thread::spawn(move || {
                 handle_client_handshake(server, 94, &events, &reader_quit)
             });
-            let ClientMessage::EndpointControl { kind, data } = endpoint_hello(80, 24) else { panic!() };
+            let ClientMessage::EndpointControl { kind, data } = endpoint_hello(80, 24) else {
+                panic!()
+            };
             let mut hello: EndpointClientHello = serde_json::from_str(&data).unwrap();
             if offered {
-                hello.snapshot_codecs.push(protocol::endpoint::SNAPSHOT_DELTA_CODEC_V1.into());
+                hello
+                    .snapshot_codecs
+                    .push(protocol::endpoint::SNAPSHOT_DELTA_CODEC_V1.into());
             }
-            protocol::write_message(&mut client, &ClientMessage::EndpointControl {
-                kind, data: serde_json::to_string(&hello).unwrap(),
-            }).unwrap();
-            let welcome = endpoint_welcome(protocol::read_message(&mut client, MAX_FRAME_SIZE).unwrap());
+            protocol::write_message(
+                &mut client,
+                &ClientMessage::EndpointControl {
+                    kind,
+                    data: serde_json::to_string(&hello).unwrap(),
+                },
+            )
+            .unwrap();
+            let welcome =
+                endpoint_welcome(protocol::read_message(&mut client, MAX_FRAME_SIZE).unwrap());
             assert_eq!(welcome.generation, ENDPOINT_PROTOCOL_GENERATION);
-            assert_eq!(welcome.snapshot_codec, if offered {
-                protocol::endpoint::SNAPSHOT_DELTA_CODEC_V1
-            } else {
-                protocol::endpoint::SNAPSHOT_CODEC_V1
-            });
+            assert_eq!(
+                welcome.snapshot_codec,
+                if offered {
+                    protocol::endpoint::SNAPSHOT_DELTA_CODEC_V1
+                } else {
+                    protocol::endpoint::SNAPSHOT_CODEC_V1
+                }
+            );
             let Some(ServerEvent::ClientShellConnected { writer, .. }) = event_rx.blocking_recv()
-            else { panic!("handshake must register a shell writer") };
+            else {
+                panic!("handshake must register a shell writer")
+            };
             assert_eq!(writer.render.queue.snapshot_delta, offered);
             drop(writer);
             drop(client);

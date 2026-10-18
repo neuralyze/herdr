@@ -590,7 +590,13 @@ fn fill_render_lane(server: &mut HeadlessServer) -> ClientWriter {
         .expect("dummy frame");
     let paused = ClientWriter::test_paused();
     paused.test_fill_render(queued);
-    server.clients.get_mut(&1).unwrap().writer.replace(paused).unwrap()
+    server
+        .clients
+        .get_mut(&1)
+        .unwrap()
+        .writer
+        .replace(paused)
+        .unwrap()
 }
 
 #[tokio::test]

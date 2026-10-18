@@ -23,15 +23,22 @@ fn client_shell_projection(
 ) {
     let read_control = |expected| {
         let mut message = read_server_message(
-            receiver.recv_timeout(Duration::from_secs(1)).expect("endpoint projection"),
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("endpoint projection"),
         );
         if let ServerMessage::EndpointControl { kind, data } = &message {
             if kind == protocol::endpoint::AGENT_VIEW_PROJECTION_KIND {
                 let clear: protocol::endpoint::EndpointAgentViewProjection =
                     serde_json::from_str(data).unwrap();
-                assert!(clear.view.is_none(), "non-empty views must be checked explicitly");
+                assert!(
+                    clear.view.is_none(),
+                    "non-empty views must be checked explicitly"
+                );
                 message = read_server_message(
-                    receiver.recv_timeout(Duration::from_secs(1)).expect("endpoint completions"),
+                    receiver
+                        .recv_timeout(Duration::from_secs(1))
+                        .expect("endpoint completions"),
                 );
             }
         }

@@ -516,7 +516,8 @@ fn connect_once(
     let negotiation = EndpointNegotiation::new(
         handshake.endpoint_methods.unwrap_or_default(),
         handshake.endpoint_capabilities.unwrap_or_default(),
-    ).with_snapshot_delta(handshake.snapshot_delta);
+    )
+    .with_snapshot_delta(handshake.snapshot_delta);
     if !negotiation.supports_surface_interest()
         || (!endpoint_id.is_local() && !negotiation.supports_health_check())
     {

@@ -397,11 +397,11 @@ mod tests {
         assert!(!data.contains("workspaces"));
         assert!(!data.contains("commands"));
         let value: serde_json::Value = serde_json::from_str(&data).unwrap();
-        assert!(
-            value["changes"].as_array().unwrap().iter().any(|change| {
-                change["field"] == "agent_view_label" && change["value"].is_null()
-            })
-        );
+        assert!(value["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|change| { change["field"] == "agent_view_label" && change["value"].is_null() }));
         assert_eq!(
             apply_snapshot_delta(&base, serde_json::from_str(&data).unwrap()).unwrap(),
             next
@@ -528,16 +528,14 @@ mod tests {
             revision: base.revision + 1,
             changes,
         };
-        assert!(
-            apply_snapshot_delta(
-                &base,
-                make(vec![
-                    SnapshotChange::AgentViewLabel(None),
-                    SnapshotChange::AgentViewLabel(Some("x".into())),
-                ])
-            )
-            .is_err()
-        );
+        assert!(apply_snapshot_delta(
+            &base,
+            make(vec![
+                SnapshotChange::AgentViewLabel(None),
+                SnapshotChange::AgentViewLabel(Some("x".into())),
+            ])
+        )
+        .is_err());
         for patch in [
             SnapshotRows {
                 length: 1,
@@ -718,11 +716,9 @@ mod tests {
                 }),
             ],
         };
-        assert!(
-            decoder
-                .decode(&kind, &serde_json::to_string(&invalid).unwrap())
-                .is_err()
-        );
+        assert!(decoder
+            .decode(&kind, &serde_json::to_string(&invalid).unwrap())
+            .is_err());
         assert_eq!(
             decoder.base.as_ref(),
             Some(&base),

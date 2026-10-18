@@ -153,7 +153,8 @@ pub(crate) fn probe_endpoint_negotiation(
     Ok(super::endpoint::EndpointNegotiation::new(
         handshake.endpoint_methods.unwrap_or_default(),
         handshake.endpoint_capabilities.unwrap_or_default(),
-    ).with_snapshot_delta(handshake.snapshot_delta))
+    )
+    .with_snapshot_delta(handshake.snapshot_delta))
 }
 
 pub(super) struct HandshakePixelCapabilities {
@@ -266,7 +267,10 @@ pub(super) fn do_handshake(
             });
         }
         if welcome.generation != ENDPOINT_PROTOCOL_GENERATION
-            || !matches!(welcome.snapshot_codec.as_str(), SNAPSHOT_CODEC_V1 | SNAPSHOT_DELTA_CODEC_V1)
+            || !matches!(
+                welcome.snapshot_codec.as_str(),
+                SNAPSHOT_CODEC_V1 | SNAPSHOT_DELTA_CODEC_V1
+            )
             || welcome.surface_codec != SURFACE_CODEC_V1
             || welcome.input_codec != INPUT_CODEC_V1
             || welcome.blob_codec != BLOB_CODEC_V1

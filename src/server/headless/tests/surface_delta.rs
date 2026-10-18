@@ -39,7 +39,13 @@ fn fill_render_lane(server: &mut HeadlessServer, client_id: u64) -> ClientWriter
         .expect("dummy frame");
     let paused = ClientWriter::test_paused();
     paused.test_fill_render(queued);
-    server.clients.get_mut(&client_id).unwrap().writer.replace(paused).unwrap()
+    server
+        .clients
+        .get_mut(&client_id)
+        .unwrap()
+        .writer
+        .replace(paused)
+        .unwrap()
 }
 
 #[tokio::test]
@@ -225,7 +231,10 @@ async fn surface_delta_preserves_graphics_baseline_through_queue_recovery() {
 
 fn drain_projection_and_surface(
     writer: &ClientWriter,
-) -> (Option<Box<protocol::ClientShellSnapshot>>, Vec<ServerMessage>) {
+) -> (
+    Option<Box<protocol::ClientShellSnapshot>>,
+    Vec<ServerMessage>,
+) {
     let mut snapshot: Option<Box<protocol::ClientShellSnapshot>> = None;
     let mut view: Option<protocol::endpoint::EndpointAgentViewProjection> = None;
     let mut completions: Option<protocol::endpoint::EndpointAgentCompletions> = None;
@@ -233,9 +242,8 @@ fn drain_projection_and_surface(
     for bytes in writer.test_drain() {
         let mut cursor = std::io::Cursor::new(bytes);
         while cursor.position() < cursor.get_ref().len() as u64 {
-            let message: ServerMessage = protocol::read_message(
-                &mut cursor, protocol::MAX_GRAPHICS_FRAME_SIZE,
-            ).unwrap();
+            let message: ServerMessage =
+                protocol::read_message(&mut cursor, protocol::MAX_GRAPHICS_FRAME_SIZE).unwrap();
             match message {
                 ServerMessage::EndpointControl { kind, data }
                     if kind == protocol::endpoint::ENDPOINT_SNAPSHOT_KIND =>
@@ -243,13 +251,15 @@ fn drain_projection_and_surface(
                     snapshot = Some(Box::new(serde_json::from_str(&data).unwrap()));
                 }
                 ServerMessage::EndpointControl { kind, data }
-                    if kind == protocol::endpoint::AGENT_VIEW_PROJECTION_KIND => {
-                        view = Some(serde_json::from_str(&data).unwrap());
-                    }
+                    if kind == protocol::endpoint::AGENT_VIEW_PROJECTION_KIND =>
+                {
+                    view = Some(serde_json::from_str(&data).unwrap());
+                }
                 ServerMessage::EndpointControl { kind, data }
-                    if kind == protocol::endpoint::AGENT_COMPLETIONS_KIND => {
-                        completions = Some(serde_json::from_str(&data).unwrap());
-                    }
+                    if kind == protocol::endpoint::AGENT_COMPLETIONS_KIND =>
+                {
+                    completions = Some(serde_json::from_str(&data).unwrap());
+                }
                 message => surfaces.push(message),
             }
         }
@@ -261,8 +271,12 @@ fn drain_projection_and_surface(
         assert_eq!(view.revision, snapshot.revision);
         assert_eq!(completions.boot_id, snapshot.boot_id);
         assert_eq!(completions.revision, snapshot.revision);
-        let label = view.view.map(serde_json::from_value::<crate::api::schema::AgentViewSetParams>)
-            .transpose().unwrap().and_then(|view| view.label);
+        let label = view
+            .view
+            .map(serde_json::from_value::<crate::api::schema::AgentViewSetParams>)
+            .transpose()
+            .unwrap()
+            .and_then(|view| view.label);
         assert_eq!(label, snapshot.agent_view_label);
     }
     (snapshot, surfaces)
@@ -279,8 +293,7 @@ async fn replaced_pending_surface_and_patch_resync_before_reuse_scroll_chain() {
 }
 
 async fn assert_replaced_pending_resync(reuse_only: bool) {
-    let (mut server, _control, _render, pane) =
-        retained_test_server_with_control(b"initial text");
+    let (mut server, _control, _render, pane) = retained_test_server_with_control(b"initial text");
     let writer = ClientWriter::test_paused();
     {
         let client = server.clients.get_mut(&1).unwrap();
@@ -295,13 +308,20 @@ async fn assert_replaced_pending_resync(reuse_only: bool) {
     write_shared_test_pane(&mut server, pane, b"\rLATEST first replacement");
     server.app.state.workspaces[0].custom_name = Some("latest projection".into());
     server.handle_server_event(ServerEvent::ClientShellResize {
-        client_id: 1, surface_cols: 64, surface_rows: 18,
-        cell_width_px: 0, cell_height_px: 0, pixel_mouse: false,
+        client_id: 1,
+        surface_cols: 64,
+        surface_rows: 18,
+        cell_width_px: 0,
+        cell_height_px: 0,
+        pixel_mouse: false,
     });
     server.render_and_stream();
     let (snapshot, mut messages) = drain_projection_and_surface(&writer);
     assert_eq!(messages.len(), 1, "no obsolete presentation replay");
-    assert!(matches!(&messages[0], ServerMessage::PaneSurface(_)), "full resync, not a delta against discarded work");
+    assert!(
+        matches!(&messages[0], ServerMessage::PaneSurface(_)),
+        "full resync, not a delta against discarded work"
+    );
     let mut decoder = protocol::surface_reuse::Decoder::new(!reuse_only, true);
     let surface = decode_surface_message(&mut decoder, messages.remove(0));
     let snapshot = snapshot.unwrap();
@@ -325,8 +345,10 @@ async fn assert_replaced_pending_resync(reuse_only: bool) {
     let (snapshot, mut messages) = drain_projection_and_surface(&writer);
     assert_eq!(messages.len(), 1);
     if !reuse_only {
-        assert!(matches!(&messages[0], ServerMessage::EndpointControl { kind, .. }
-            if kind == protocol::surface_delta::MESSAGE_KIND));
+        assert!(
+            matches!(&messages[0], ServerMessage::EndpointControl { kind, .. }
+            if kind == protocol::surface_delta::MESSAGE_KIND)
+        );
     }
     let surface = decode_surface_message(&mut decoder, messages.remove(0));
     let snapshot = snapshot.unwrap();
@@ -346,9 +368,14 @@ async fn assert_replaced_pending_resync(reuse_only: bool) {
     } else {
         protocol::surface_delta::MESSAGE_KIND
     };
-    assert!(matches!(&messages[0], ServerMessage::EndpointControl { kind, .. } if kind == expected_kind));
+    assert!(
+        matches!(&messages[0], ServerMessage::EndpointControl { kind, .. } if kind == expected_kind)
+    );
     let surface = decode_surface_message(&mut decoder, messages.remove(0));
-    assert_eq!(surface.projection_revision, snapshot.as_ref().unwrap().revision);
+    assert_eq!(
+        surface.projection_revision,
+        snapshot.as_ref().unwrap().revision
+    );
     receiver.set_snapshot(snapshot.unwrap());
     receiver.set_pane_surface(surface);
     write_shared_test_pane(&mut server, pane, b"\rDELIVERED valid row patch");
@@ -361,11 +388,23 @@ async fn assert_replaced_pending_resync(reuse_only: bool) {
     let _ = receiver.apply_pane_surface_patch(patch);
     assert!(frame_text(&receiver.compose(64, 20).unwrap()).contains("DELIVERED valid row patch"));
     let scrolling_lines = |range: std::ops::Range<usize>| {
-        range.map(|n| format!("build step {n:>3}: compiled module_{n} in {}ms\r\n", n * 7 % 97))
-            .collect::<String>().into_bytes()
+        range
+            .map(|n| {
+                format!(
+                    "build step {n:>3}: compiled module_{n} in {}ms\r\n",
+                    n * 7 % 97
+                )
+            })
+            .collect::<String>()
+            .into_bytes()
     };
     write_shared_test_pane(&mut server, pane, &scrolling_lines(0..40));
-    server.clients.get_mut(&1).unwrap().render_state.request_recompute();
+    server
+        .clients
+        .get_mut(&1)
+        .unwrap()
+        .render_state
+        .request_recompute();
     server.render_and_stream();
     let (_, mut messages) = drain_projection_and_surface(&writer);
     assert_eq!(messages.len(), 1);
@@ -382,56 +421,87 @@ async fn assert_replaced_pending_resync(reuse_only: bool) {
         panic!("expanded scroll patch after coherent resync");
     };
     assert_eq!(patch.boot_id, scrolling_surface.boot_id);
-    assert_eq!(patch.projection_revision, scrolling_surface.projection_revision);
-    assert_eq!(patch.base_surface_revision, scrolling_surface.surface_revision);
-    assert_eq!(patch.surface_revision, scrolling_surface.surface_revision + 1);
+    assert_eq!(
+        patch.projection_revision,
+        scrolling_surface.projection_revision
+    );
+    assert_eq!(
+        patch.base_surface_revision,
+        scrolling_surface.surface_revision
+    );
+    assert_eq!(
+        patch.surface_revision,
+        scrolling_surface.surface_revision + 1
+    );
     crate::server::render_stream::apply_pane_surface_patch(&mut scrolling_surface, &patch);
     let committed = server.clients[&1].render_state.last_pane_surface().unwrap();
-    assert_eq!(&scrolling_surface, committed, "decoded scrolling cells/layout must exactly match sender commit");
+    assert_eq!(
+        &scrolling_surface, committed,
+        "decoded scrolling cells/layout must exactly match sender commit"
+    );
     let _ = receiver.apply_pane_surface_patch(patch);
     let painted = receiver.compose(64, 20).unwrap();
     assert!(frame_text(&painted).contains("module_41"));
     let mut full_receiver = crate::client::ClientShellState::new(
         crate::client::ClientShellConfig::from_config(&crate::config::Config::default()),
     );
-    full_receiver.set_snapshot(Box::new(server.clients[&1].shell_snapshot.as_deref().unwrap().clone()));
+    full_receiver.set_snapshot(Box::new(
+        server.clients[&1]
+            .shell_snapshot
+            .as_deref()
+            .unwrap()
+            .clone(),
+    ));
     full_receiver.set_pane_surface(committed.clone());
     let full_painted = full_receiver.compose(64, 20).unwrap();
-    assert_eq!(painted.cells, full_painted.cells, "real patched consumer must paint the exact full-frame result");
+    assert_eq!(
+        painted.cells, full_painted.cells,
+        "real patched consumer must paint the exact full-frame result"
+    );
     assert_eq!(painted.cursor, full_painted.cursor);
     shutdown_test_runtimes(&mut server);
 }
 
 #[tokio::test]
 async fn metadata_churn_keeps_only_latest_coherent_paint_at_each_consumer_turn() {
-    let (mut server, _control, _render, pane) =
-        retained_test_server_with_control(b"initial");
+    let (mut server, _control, _render, pane) = retained_test_server_with_control(b"initial");
     let writer = ClientWriter::test_paused();
     server.clients.get_mut(&1).unwrap().writer = Some(writer.clone());
     for number in 1..=200 {
         server.app.state.workspaces[0].custom_name = Some(format!("revision {number}"));
-        server.app.state.agent_view_override = (number % 40 != 0).then(|| {
-            crate::api::schema::AgentViewSetParams {
-                source: "churn-test".into(), label: Some(format!("view {number}")),
-                filter: None, sort: Vec::new(),
-            }
-        });
+        server.app.state.agent_view_override =
+            (number % 40 != 0).then(|| crate::api::schema::AgentViewSetParams {
+                source: "churn-test".into(),
+                label: Some(format!("view {number}")),
+                filter: None,
+                sort: Vec::new(),
+            });
         let marker = format!("LATEST_INPUT_{number:03}");
         write_shared_test_pane(&mut server, pane, format!("\r{marker}\x1b[K").as_bytes());
         server.render_and_stream();
         if number % 20 == 0 {
             let (snapshot, mut messages) = drain_projection_and_surface(&writer);
-            assert_eq!(messages.len(), 1, "consumer must not replay intermediate metadata/surfaces");
+            assert_eq!(
+                messages.len(),
+                1,
+                "consumer must not replay intermediate metadata/surfaces"
+            );
             let ServerMessage::PaneSurface(surface) = messages.remove(0) else {
                 panic!("replacement requires a complete fresh surface");
             };
             let snapshot = snapshot.unwrap();
-            assert_eq!(snapshot.revision, server.clients[&1].shell_projection_revision);
+            assert_eq!(
+                snapshot.revision,
+                server.clients[&1].shell_projection_revision
+            );
             assert_eq!(surface.projection_revision, snapshot.revision);
             assert_eq!(surface.boot_id, snapshot.boot_id);
             assert!(frame_text(&surface.frame).contains(&marker));
             if number % 40 == 0 {
-                assert!(snapshot.agent_view_label.is_none(), "latest clear must survive replacement");
+                assert!(
+                    snapshot.agent_view_label.is_none(),
+                    "latest clear must survive replacement"
+                );
             }
         }
     }
@@ -474,21 +544,24 @@ async fn negotiated_snapshot_and_surface_deltas_survive_replacement_in_real_rece
             let message = read_server_message(frame);
             match message {
                 ServerMessage::EndpointControl { kind, data }
-                    if kind == protocol::endpoint::AGENT_VIEW_PROJECTION_KIND => {
+                    if kind == protocol::endpoint::AGENT_VIEW_PROJECTION_KIND =>
+                {
                     let view: protocol::endpoint::EndpointAgentViewProjection =
                         serde_json::from_str(&data).unwrap();
                     assert!(view.view.is_none());
                     view_revision = Some((view.boot_id, view.revision));
                 }
                 ServerMessage::EndpointControl { kind, data }
-                    if kind == protocol::endpoint::AGENT_COMPLETIONS_KIND => {
+                    if kind == protocol::endpoint::AGENT_COMPLETIONS_KIND =>
+                {
                     let completions: protocol::endpoint::EndpointAgentCompletions =
                         serde_json::from_str(&data).unwrap();
                     completion_revision = Some((completions.boot_id, completions.revision));
                 }
                 ServerMessage::EndpointControl { kind, data }
                     if kind == protocol::endpoint::ENDPOINT_SNAPSHOT_KIND
-                        || kind == protocol::endpoint::SNAPSHOT_DELTA_CODEC_V1 => {
+                        || kind == protocol::endpoint::SNAPSHOT_DELTA_CODEC_V1 =>
+                {
                     if kind == protocol::endpoint::SNAPSHOT_DELTA_CODEC_V1 {
                         snapshot_deltas += 1;
                     } else {
@@ -502,7 +575,8 @@ async fn negotiated_snapshot_and_surface_deltas_survive_replacement_in_real_rece
                 }
                 surface => {
                     if matches!(&surface, ServerMessage::EndpointControl { kind, .. }
-                        if kind == protocol::surface_delta::MESSAGE_KIND) {
+                        if kind == protocol::surface_delta::MESSAGE_KIND)
+                    {
                         surface_deltas += 1;
                     } else {
                         assert_eq!(turn, 0, "steady churn must not resend the full grid");
@@ -516,7 +590,10 @@ async fn negotiated_snapshot_and_surface_deltas_survive_replacement_in_real_rece
                 }
             }
         }
-        assert_eq!(surface_count, 1, "only the newest pending presentation is visible");
+        assert_eq!(
+            surface_count, 1,
+            "only the newest pending presentation is visible"
+        );
         assert!(frame_text(&receiver.compose(80, 25).unwrap()).contains(&marker));
     }
     assert_eq!(snapshot_deltas, 5);
@@ -529,10 +606,16 @@ async fn negotiated_snapshot_and_surface_deltas_survive_replacement_in_real_rece
     client.shell_snapshot = None;
     client.render_state.reset_baseline();
     server.render_and_stream();
-    let messages = reconnect.test_drain().into_iter().map(read_server_message).collect::<Vec<_>>();
+    let messages = reconnect
+        .test_drain()
+        .into_iter()
+        .map(read_server_message)
+        .collect::<Vec<_>>();
     assert!(messages.iter().any(|message| matches!(message,
         ServerMessage::EndpointControl { kind, .. } if kind == protocol::endpoint::ENDPOINT_SNAPSHOT_KIND)));
-    assert!(messages.iter().any(|message| matches!(message, ServerMessage::PaneSurface(_))));
+    assert!(messages
+        .iter()
+        .any(|message| matches!(message, ServerMessage::PaneSurface(_))));
     assert!(!messages.iter().any(|message| matches!(message,
         ServerMessage::EndpointControl { kind, .. } if kind == protocol::endpoint::SNAPSHOT_DELTA_CODEC_V1)));
     shutdown_test_runtimes(&mut server);

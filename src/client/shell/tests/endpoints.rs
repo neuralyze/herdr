@@ -1780,7 +1780,9 @@ fn legacy_custom_views_keep_v1_per_endpoint_projection() {
 #[cfg(unix)]
 #[test]
 fn coalesced_projection_clear_and_completion_apply_through_generation_aware_receiver() {
-    use crate::api::schema::{AgentViewBuiltinField, AgentViewField, AgentViewFilter, AgentViewValue};
+    use crate::api::schema::{
+        AgentViewBuiltinField, AgentViewField, AgentViewFilter, AgentViewValue,
+    };
     use crate::client::endpoint::{decode_endpoint_control, EndpointControlMessage};
     use crate::protocol::{self, ServerMessage};
     use crate::server::client_transport::ClientWriter;
@@ -1789,35 +1791,68 @@ fn coalesced_projection_clear_and_completion_apply_through_generation_aware_rece
         protocol::write_message(&mut bytes, &message).unwrap();
         bytes
     };
-    let enqueue = |writer: &ClientWriter, revision, status, sequence, view: Option<&crate::api::schema::AgentViewSetParams>, completed: Option<u64>| {
+    let enqueue = |writer: &ClientWriter,
+                   revision,
+                   status,
+                   sequence,
+                   view: Option<&crate::api::schema::AgentViewSetParams>,
+                   completed: Option<u64>| {
         let mut projection = snapshot();
         projection.revision = revision;
         projection.agent_view_label = view.and_then(|view| view.label.clone());
         projection.agent_order = vec!["pane_1".into()];
         projection.agents = vec![agent("queued-worker", status, sequence)];
         let completions = protocol::endpoint::EndpointAgentCompletions {
-            boot_id: projection.boot_id.clone(), revision,
-            completions: completed.map(|seq| ("pane_1".into(), seq)).into_iter().collect(),
+            boot_id: projection.boot_id.clone(),
+            revision,
+            completions: completed
+                .map(|seq| ("pane_1".into(), seq))
+                .into_iter()
+                .collect(),
         };
-        writer.set_shell_projection([
-            frame(protocol::endpoint::agent_view_projection_message(&projection.boot_id, revision, view).unwrap()),
-            frame(protocol::endpoint::agent_completions_message(&completions).unwrap()),
-        ], std::sync::Arc::new(projection)).unwrap();
+        writer
+            .set_shell_projection(
+                [
+                    frame(
+                        protocol::endpoint::agent_view_projection_message(
+                            &projection.boot_id,
+                            revision,
+                            view,
+                        )
+                        .unwrap(),
+                    ),
+                    frame(protocol::endpoint::agent_completions_message(&completions).unwrap()),
+                ],
+                std::sync::Arc::new(projection),
+            )
+            .unwrap();
         writer.send_projection().unwrap();
     };
     let deliver = |state: &mut ClientShellState, writer: &ClientWriter| {
         let batches = writer.test_drain();
-        assert_eq!(batches.len(), 3, "only the latest complete projection reaches the receiver");
+        assert_eq!(
+            batches.len(),
+            3,
+            "only the latest complete projection reaches the receiver"
+        );
         for bytes in batches {
-            let message: ServerMessage = protocol::read_message(&mut bytes.as_slice(), protocol::MAX_FRAME_SIZE).unwrap();
-            let ServerMessage::EndpointControl { kind, data } = message else { panic!() };
+            let message: ServerMessage =
+                protocol::read_message(&mut bytes.as_slice(), protocol::MAX_FRAME_SIZE).unwrap();
+            let ServerMessage::EndpointControl { kind, data } = message else {
+                panic!()
+            };
             match decode_endpoint_control(&kind, &data, &mut Default::default()).unwrap() {
-                EndpointControlMessage::AgentViewProjection(view) =>
-                    state.set_endpoint_agent_view_projection_for_generation(&ClientEndpointId::Local, 7, view),
-                EndpointControlMessage::AgentCompletions(completions) =>
-                    state.set_endpoint_agent_completions(&ClientEndpointId::Local, 7, completions),
-                EndpointControlMessage::Snapshot(snapshot) =>
-                    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, snapshot),
+                EndpointControlMessage::AgentViewProjection(view) => state
+                    .set_endpoint_agent_view_projection_for_generation(
+                        &ClientEndpointId::Local,
+                        7,
+                        view,
+                    ),
+                EndpointControlMessage::AgentCompletions(completions) => {
+                    state.set_endpoint_agent_completions(&ClientEndpointId::Local, 7, completions)
+                }
+                EndpointControlMessage::Snapshot(snapshot) => state
+                    .set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, snapshot),
                 _ => panic!("complete projection member"),
             }
         }
@@ -1840,14 +1875,30 @@ fn coalesced_projection_clear_and_completion_apply_through_generation_aware_rece
     });
     enqueue(&writer, 1, AgentStatus::Idle, 1, Some(&view), None);
     deliver(&mut state, &writer);
-    let local = state.endpoints.iter().find(|endpoint| endpoint.endpoint_id.is_local()).unwrap();
-    assert_eq!(ClientShellState::endpoint_agent_view(local), Some(&Ok(Some(view.clone()))));
-    assert!(aggregate_navigation::aggregate_agent_rows(
-        &state.endpoints, &ClientEndpointId::Local, state.config.agent_panel_sort,
-    ).is_empty(), "decoded generation-matched view must filter the actual aggregate rows");
+    let local = state
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.endpoint_id.is_local())
+        .unwrap();
+    assert_eq!(
+        ClientShellState::endpoint_agent_view(local),
+        Some(&Ok(Some(view.clone())))
+    );
+    assert!(
+        aggregate_navigation::aggregate_agent_rows(
+            &state.endpoints,
+            &ClientEndpointId::Local,
+            state.config.agent_panel_sort,
+        )
+        .is_empty(),
+        "decoded generation-matched view must filter the actual aggregate rows"
+    );
     state.set_pane_surface(surface());
     let hidden = frame_rows(&state.compose(100, 28).unwrap()).join("\n");
-    assert!(!hidden.contains("queued-worker"), "received view filter must actually hide idle agent");
+    assert!(
+        !hidden.contains("queued-worker"),
+        "received view filter must actually hide idle agent"
+    );
 
     // Both working and completed snapshots are replaced before this consumer
     // reads again. The final clear must remove the previous installed filter,
@@ -1857,31 +1908,64 @@ fn coalesced_projection_clear_and_completion_apply_through_generation_aware_rece
     enqueue(&writer, 4, AgentStatus::Idle, 3, None, Some(3));
     deliver(&mut state, &writer);
     assert_eq!(state.snapshot.as_ref().unwrap().revision, 4);
-    assert_eq!(state.snapshot.as_ref().unwrap().agents[0].agent_status, AgentStatus::Done);
-    let local = state.endpoints.iter().find(|endpoint| endpoint.endpoint_id.is_local()).unwrap();
-    assert!(matches!(ClientShellState::endpoint_agent_view(local), Some(Ok(None))));
-    assert!(!local.agent_presentation.seen(&local.snapshot.as_ref().unwrap().agents[0]));
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().agents[0].agent_status,
+        AgentStatus::Done
+    );
+    let local = state
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.endpoint_id.is_local())
+        .unwrap();
+    assert!(matches!(
+        ClientShellState::endpoint_agent_view(local),
+        Some(Ok(None))
+    ));
+    assert!(!local
+        .agent_presentation
+        .seen(&local.snapshot.as_ref().unwrap().agents[0]));
     let mut current_surface = surface();
     current_surface.projection_revision = 4;
     current_surface.surface_revision = 4;
     state.set_pane_surface(current_surface.clone());
-    assert_eq!(state.snapshot.as_ref().unwrap().agents[0].agent_status, AgentStatus::Done,
-        "unfocused presentation must not advance viewed watermark");
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().agents[0].agent_status,
+        AgentStatus::Done,
+        "unfocused presentation must not advance viewed watermark"
+    );
     let visible = frame_rows(&state.compose(100, 28).unwrap()).join("\n");
-    assert!(visible.contains("queued-worker"), "wire clear must restore unfiltered agent rendering");
+    assert!(
+        visible.contains("queued-worker"),
+        "wire clear must restore unfiltered agent rendering"
+    );
     state.outer_focused = Some(true);
     let mut stale_surface = current_surface.clone();
     stale_surface.projection_revision = 3;
     assert!(!state.acknowledge_active_surface_agents(&stale_surface));
-    assert_eq!(state.snapshot.as_ref().unwrap().agents[0].agent_status, AgentStatus::Done);
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().agents[0].agent_status,
+        AgentStatus::Done
+    );
     assert!(state.acknowledge_active_surface_agents(&current_surface));
-    assert_eq!(state.snapshot.as_ref().unwrap().agents[0].agent_status, AgentStatus::Idle);
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().agents[0].agent_status,
+        AgentStatus::Idle
+    );
     enqueue(&writer, 5, AgentStatus::Idle, 3, None, Some(3));
     deliver(&mut state, &writer);
-    assert_eq!(state.snapshot.as_ref().unwrap().agents[0].agent_status, AgentStatus::Idle,
-        "repeated cumulative completion must not resurrect an acknowledged Done");
-    let local = state.endpoints.iter().find(|endpoint| endpoint.endpoint_id.is_local()).unwrap();
-    assert!(local.agent_presentation.seen(&local.snapshot.as_ref().unwrap().agents[0]));
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().agents[0].agent_status,
+        AgentStatus::Idle,
+        "repeated cumulative completion must not resurrect an acknowledged Done"
+    );
+    let local = state
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.endpoint_id.is_local())
+        .unwrap();
+    assert!(local
+        .agent_presentation
+        .seen(&local.snapshot.as_ref().unwrap().agents[0]));
 }
 
 #[test]
@@ -3135,7 +3219,9 @@ fn compact_snapshot_receive_path_preserves_focus_view_completion_and_reconnect_s
 
     struct Sink;
     impl crate::client::endpoint::EndpointTransport for Sink {
-        fn send(&mut self, _: &ClientMessage) -> std::io::Result<()> { Ok(()) }
+        fn send(&mut self, _: &ClientMessage) -> std::io::Result<()> {
+            Ok(())
+        }
     }
     fn deliver(
         state: &mut ClientShellState,
@@ -3143,14 +3229,24 @@ fn compact_snapshot_receive_path_preserves_focus_view_completion_and_reconnect_s
         generation: u64,
         message: ServerMessage,
     ) -> Result<(), String> {
-        let ServerMessage::EndpointControl { kind, data } = message else { panic!("control") };
+        let ServerMessage::EndpointControl { kind, data } = message else {
+            panic!("control")
+        };
         match registry.decode_control(&ClientEndpointId::Local, generation, &kind, &data)? {
-            EndpointControlMessage::Snapshot(snapshot) =>
-                state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, generation, snapshot),
-            EndpointControlMessage::AgentViewProjection(view) =>
-                state.set_endpoint_agent_view_projection_for_generation(&ClientEndpointId::Local, generation, view),
-            EndpointControlMessage::AgentCompletions(completions) =>
-                state.set_endpoint_agent_completions(&ClientEndpointId::Local, generation, completions),
+            EndpointControlMessage::Snapshot(snapshot) => state
+                .set_endpoint_snapshot_for_generation(
+                    &ClientEndpointId::Local,
+                    generation,
+                    snapshot,
+                ),
+            EndpointControlMessage::AgentViewProjection(view) => state
+                .set_endpoint_agent_view_projection_for_generation(
+                    &ClientEndpointId::Local,
+                    generation,
+                    view,
+                ),
+            EndpointControlMessage::AgentCompletions(completions) => state
+                .set_endpoint_agent_completions(&ClientEndpointId::Local, generation, completions),
             _ => panic!("projection member"),
         }
         Ok(())
@@ -3164,16 +3260,30 @@ fn compact_snapshot_receive_path_preserves_focus_view_completion_and_reconnect_s
     ) {
         let ServerMessage::EndpointControl { kind, data } =
             endpoint::snapshot_message(current, Some(base), true).unwrap()
-        else { panic!("snapshot control") };
+        else {
+            panic!("snapshot control")
+        };
         assert_eq!(kind, endpoint::SNAPSHOT_DELTA_CODEC_V1);
         let patch: serde_json::Value = serde_json::from_str(&data).unwrap();
-        assert!(patch["changes"].as_array().unwrap().iter().all(|change| change["field"] != "agents"),
-            "unrelated metadata must not retransmit agent rows");
-        let EndpointControlMessage::Snapshot(raw) =
-            registry.decode_control(&ClientEndpointId::Local, 7, &kind, &data).unwrap()
-        else { panic!("decoded snapshot") };
-        assert_eq!(raw.agents[0].agent_status, AgentStatus::Idle,
-            "wire decoder must retain raw Idle, not shell-projected Done");
+        assert!(
+            patch["changes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|change| change["field"] != "agents"),
+            "unrelated metadata must not retransmit agent rows"
+        );
+        let EndpointControlMessage::Snapshot(raw) = registry
+            .decode_control(&ClientEndpointId::Local, 7, &kind, &data)
+            .unwrap()
+        else {
+            panic!("decoded snapshot")
+        };
+        assert_eq!(
+            raw.agents[0].agent_status,
+            AgentStatus::Idle,
+            "wire decoder must retain raw Idle, not shell-projected Done"
+        );
         state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, raw);
     }
 
@@ -3182,7 +3292,11 @@ fn compact_snapshot_receive_path_preserves_focus_view_completion_and_reconnect_s
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_endpoint_agent_view_projection_supported(&ClientEndpointId::Local, true);
     state.outer_focused = Some(false);
-    let mut registry = EndpointRegistry::new(Sink, 7, EndpointNegotiation::default().with_snapshot_delta(true));
+    let mut registry = EndpointRegistry::new(
+        Sink,
+        7,
+        EndpointNegotiation::default().with_snapshot_delta(true),
+    );
     let mut base = snapshot();
     base.server_keybindings_toml = Some("# unchanged endpoint config\n".repeat(1000));
     base.config_diagnostic = Some("old warning".into());
@@ -3193,11 +3307,29 @@ fn compact_snapshot_receive_path_preserves_focus_view_completion_and_reconnect_s
     second.pane_id = "pane_2".into();
     second.focused = false;
     base.panes.push(second);
-    deliver(&mut state, &mut registry, 7, endpoint::agent_view_projection_message(
-        &base.boot_id, base.revision, Some(&current_workspace_view()),
-    ).unwrap()).unwrap();
-    deliver(&mut state, &mut registry, 7, endpoint::snapshot_message(&base, None, true).unwrap()).unwrap();
-    assert_eq!(state.snapshot.as_ref().unwrap().focused_pane_id, base.focused_pane_id);
+    deliver(
+        &mut state,
+        &mut registry,
+        7,
+        endpoint::agent_view_projection_message(
+            &base.boot_id,
+            base.revision,
+            Some(&current_workspace_view()),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    deliver(
+        &mut state,
+        &mut registry,
+        7,
+        endpoint::snapshot_message(&base, None, true).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().focused_pane_id,
+        base.focused_pane_id
+    );
 
     let mut next = base.clone();
     next.revision += 1;
@@ -3208,28 +3340,50 @@ fn compact_snapshot_receive_path_preserves_focus_view_completion_and_reconnect_s
     next.agent_view_label = None;
     next.agents[0].agent_status = AgentStatus::Idle;
     next.agents[0].state_change_seq = 2;
-    deliver(&mut state, &mut registry, 7, endpoint::agent_view_projection_message(
-        &next.boot_id, next.revision, None,
-    ).unwrap()).unwrap();
-    deliver(&mut state, &mut registry, 7, endpoint::agent_completions_message(
-        &endpoint::EndpointAgentCompletions {
-            boot_id: next.boot_id.clone(), revision: next.revision,
+    deliver(
+        &mut state,
+        &mut registry,
+        7,
+        endpoint::agent_view_projection_message(&next.boot_id, next.revision, None).unwrap(),
+    )
+    .unwrap();
+    deliver(
+        &mut state,
+        &mut registry,
+        7,
+        endpoint::agent_completions_message(&endpoint::EndpointAgentCompletions {
+            boot_id: next.boot_id.clone(),
+            revision: next.revision,
             completions: [("pane_1".into(), 2)].into_iter().collect(),
-        },
-    ).unwrap()).unwrap();
+        })
+        .unwrap(),
+    )
+    .unwrap();
     let delta = endpoint::snapshot_message(&next, Some(&base), true).unwrap();
-    assert!(matches!(&delta, ServerMessage::EndpointControl { kind, data }
-        if kind == endpoint::SNAPSHOT_DELTA_CODEC_V1 && !data.contains("server_keybindings_toml")));
+    assert!(
+        matches!(&delta, ServerMessage::EndpointControl { kind, data }
+        if kind == endpoint::SNAPSHOT_DELTA_CODEC_V1 && !data.contains("server_keybindings_toml"))
+    );
     deliver(&mut state, &mut registry, 7, delta.clone()).unwrap();
     let installed = state.snapshot.as_ref().unwrap();
     assert_eq!(installed.revision, next.revision);
     assert_eq!(installed.focused_pane_id.as_deref(), Some("pane_2"));
     assert!(installed.config_diagnostic.is_none());
     assert!(installed.agent_view_label.is_none());
-    assert_eq!(installed.agents[0].agent_status, AgentStatus::Done,
-        "wire reconstruction must not bypass cumulative completion presentation");
-    let local = state.endpoints.iter().find(|endpoint| endpoint.endpoint_id.is_local()).unwrap();
-    assert!(matches!(ClientShellState::endpoint_agent_view(local), Some(Ok(None))));
+    assert_eq!(
+        installed.agents[0].agent_status,
+        AgentStatus::Done,
+        "wire reconstruction must not bypass cumulative completion presentation"
+    );
+    let local = state
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.endpoint_id.is_local())
+        .unwrap();
+    assert!(matches!(
+        ClientShellState::endpoint_agent_view(local),
+        Some(Ok(None))
+    ));
     let mut current_surface = surface();
     current_surface.projection_revision = next.revision;
     current_surface.surface_revision = next.revision;
@@ -3238,23 +3392,34 @@ fn compact_snapshot_receive_path_preserves_focus_view_completion_and_reconnect_s
     let visible = frame_rows(&state.compose(100, 28).unwrap()).join("\n");
     assert!(visible.contains("compact-worker"), "{visible}");
     assert!(visible.contains("LIVE"), "{visible}");
-    assert!(deliver(&mut state, &mut registry, 7, delta.clone()).is_err(), "replayed base rejected");
+    assert!(
+        deliver(&mut state, &mut registry, 7, delta.clone()).is_err(),
+        "replayed base rejected"
+    );
 
     let mut metadata = next.clone();
     metadata.revision += 1;
     metadata.worktree_directory.push_str("/updated");
     deliver_metadata_delta(&mut state, &mut registry, &metadata, &next);
-    assert_eq!(state.snapshot.as_ref().unwrap().agents[0].agent_status, AgentStatus::Done,
-        "metadata-only delta must preserve an unacknowledged completion presentation");
-    let local = state.endpoints.iter().find(|endpoint| endpoint.endpoint_id.is_local()).unwrap();
-    assert!(!local.agent_presentation.seen(&local.snapshot.as_ref().unwrap().agents[0]));
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().agents[0].agent_status,
+        AgentStatus::Done,
+        "metadata-only delta must preserve an unacknowledged completion presentation"
+    );
+    let local = state
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.endpoint_id.is_local())
+        .unwrap();
+    assert!(!local
+        .agent_presentation
+        .seen(&local.snapshot.as_ref().unwrap().agents[0]));
 
     let mut acknowledged_surface = surface();
     acknowledged_surface.projection_revision = metadata.revision;
     acknowledged_surface.surface_revision = metadata.revision;
-    acknowledged_surface.frame = FrameData::from_ratatui_buffer(
-        &Buffer::with_lines(["LIVEPANE", "TWOPANES"]), None,
-    );
+    acknowledged_surface.frame =
+        FrameData::from_ratatui_buffer(&Buffer::with_lines(["LIVEPANE", "TWOPANES"]), None);
     let mut second_surface_pane = acknowledged_surface.panes[0].clone();
     second_surface_pane.pane_id = "pane_2".into();
     second_surface_pane.rect.x = 4;
@@ -3263,25 +3428,72 @@ fn compact_snapshot_receive_path_preserves_focus_view_completion_and_reconnect_s
     acknowledged_surface.panes.push(second_surface_pane);
     state.outer_focused = Some(true);
     state.set_pane_surface(acknowledged_surface);
-    assert_eq!(state.snapshot.as_ref().unwrap().agents[0].agent_status, AgentStatus::Idle,
-        "focused coherent surface must acknowledge the completed agent");
-    let local = state.endpoints.iter().find(|endpoint| endpoint.endpoint_id.is_local()).unwrap();
-    assert!(local.agent_presentation.seen(&local.snapshot.as_ref().unwrap().agents[0]));
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().agents[0].agent_status,
+        AgentStatus::Idle,
+        "focused coherent surface must acknowledge the completed agent"
+    );
+    let local = state
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.endpoint_id.is_local())
+        .unwrap();
+    assert!(local
+        .agent_presentation
+        .seen(&local.snapshot.as_ref().unwrap().agents[0]));
 
     let mut after_ack = metadata.clone();
     after_ack.revision += 1;
     after_ack.tab_bar_right_separator.push(' ');
     deliver_metadata_delta(&mut state, &mut registry, &after_ack, &metadata);
-    assert_eq!(state.snapshot.as_ref().unwrap().agents[0].agent_status, AgentStatus::Idle,
-        "later metadata-only delta must not resurrect an acknowledged Done");
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().agents[0].agent_status,
+        AgentStatus::Idle,
+        "later metadata-only delta must not resurrect an acknowledged Done"
+    );
 
-    registry.insert(ClientEndpointId::Local, Sink, 8,
-        EndpointNegotiation::default().with_snapshot_delta(true), true);
-    assert!(deliver(&mut state, &mut registry, 7, delta.clone()).is_err(), "old generation rejected");
-    assert!(deliver(&mut state, &mut registry, 8, delta.clone()).is_err(), "reconnect clears wire baseline");
-    deliver(&mut state, &mut registry, 8, endpoint::snapshot_message(&after_ack, None, true).unwrap()).unwrap();
-    assert_eq!(state.snapshot.as_ref().unwrap().revision, after_ack.revision);
-    registry.insert(ClientEndpointId::Local, Sink, 9, EndpointNegotiation::default(), true);
-    deliver(&mut state, &mut registry, 9, endpoint::snapshot_message(&base, None, false).unwrap()).unwrap();
-    assert!(deliver(&mut state, &mut registry, 9, delta).is_err(), "full-v1 selection never accepts deltas");
+    registry.insert(
+        ClientEndpointId::Local,
+        Sink,
+        8,
+        EndpointNegotiation::default().with_snapshot_delta(true),
+        true,
+    );
+    assert!(
+        deliver(&mut state, &mut registry, 7, delta.clone()).is_err(),
+        "old generation rejected"
+    );
+    assert!(
+        deliver(&mut state, &mut registry, 8, delta.clone()).is_err(),
+        "reconnect clears wire baseline"
+    );
+    deliver(
+        &mut state,
+        &mut registry,
+        8,
+        endpoint::snapshot_message(&after_ack, None, true).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().revision,
+        after_ack.revision
+    );
+    registry.insert(
+        ClientEndpointId::Local,
+        Sink,
+        9,
+        EndpointNegotiation::default(),
+        true,
+    );
+    deliver(
+        &mut state,
+        &mut registry,
+        9,
+        endpoint::snapshot_message(&base, None, false).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        deliver(&mut state, &mut registry, 9, delta).is_err(),
+        "full-v1 selection never accepts deltas"
+    );
 }

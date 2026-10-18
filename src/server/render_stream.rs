@@ -111,7 +111,11 @@ impl ClientRenderState {
 
     pub(crate) fn reset_baseline(&mut self) {
         match self {
-            Self::Semantic { last_surface, pending_commit, .. } => {
+            Self::Semantic {
+                last_surface,
+                pending_commit,
+                ..
+            } => {
                 *last_surface = None;
                 *pending_commit = None;
             }
@@ -128,7 +132,11 @@ impl ClientRenderState {
 
     pub(crate) fn request_repaint(&mut self) {
         match self {
-            Self::Semantic { last_surface, pending_commit, .. } => {
+            Self::Semantic {
+                last_surface,
+                pending_commit,
+                ..
+            } => {
                 *last_surface = None;
                 *pending_commit = None;
             }
@@ -309,7 +317,13 @@ impl ClientRenderState {
     /// Roll back only a presentation actually removed from the replaceable slot.
     /// Claimed/partially written and ordered updates remain valid stream bases.
     pub(crate) fn discard_pending_frame(&mut self) {
-        let Self::Semantic { last_surface, surface_revision, pending_commit, .. } = self else {
+        let Self::Semantic {
+            last_surface,
+            surface_revision,
+            pending_commit,
+            ..
+        } = self
+        else {
             return;
         };
         let Some(pending) = pending_commit.take() else {
@@ -334,13 +348,19 @@ impl ClientRenderState {
         prepared: PreparedRender,
         claimed: Arc<AtomicBool>,
     ) {
-        let Self::Semantic { last_surface, surface_revision, pending_commit, .. } = self else {
+        let Self::Semantic {
+            last_surface,
+            surface_revision,
+            pending_commit,
+            ..
+        } = self
+        else {
             self.commit_sent_frame(prepared);
             return;
         };
-        debug_assert!(pending_commit.as_ref().is_none_or(|pending| {
-            pending.claimed.load(Ordering::Acquire)
-        }));
+        debug_assert!(pending_commit
+            .as_ref()
+            .is_none_or(|pending| { pending.claimed.load(Ordering::Acquire) }));
         // Release a claimed update's old baseline before retaining the next inverse.
         *pending_commit = None;
         let previous_revision = *surface_revision;
@@ -353,19 +373,31 @@ impl ClientRenderState {
                     _ => unreachable!("semantic patch payload"),
                 };
                 let surface = last_surface.as_deref().expect("prepared patch baseline");
-                let rows = patch.rows.iter().map(|row| {
-                    let start = usize::from(row.y) * usize::from(surface.frame.width)
-                        + usize::from(row.x);
-                    crate::protocol::PaneSurfacePatchRow {
-                        x: row.x,
-                        y: row.y,
-                        cells: surface.frame.cells[start..start + row.cells.len()].to_vec(),
-                    }
-                }).collect();
-                let panes = patch.panes.iter().map(|updated| {
-                    surface.panes.iter().find(|pane| pane.pane_id == updated.pane_id)
-                        .expect("prepared patch pane").clone()
-                }).collect();
+                let rows = patch
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        let start = usize::from(row.y) * usize::from(surface.frame.width)
+                            + usize::from(row.x);
+                        crate::protocol::PaneSurfacePatchRow {
+                            x: row.x,
+                            y: row.y,
+                            cells: surface.frame.cells[start..start + row.cells.len()].to_vec(),
+                        }
+                    })
+                    .collect();
+                let panes = patch
+                    .panes
+                    .iter()
+                    .map(|updated| {
+                        surface
+                            .panes
+                            .iter()
+                            .find(|pane| pane.pane_id == updated.pane_id)
+                            .expect("prepared patch pane")
+                            .clone()
+                    })
+                    .collect();
                 SurfaceUndo::Patch(PaneSurfacePatch {
                     boot_id: surface.boot_id.clone(),
                     projection_revision: surface.projection_revision,
@@ -380,7 +412,11 @@ impl ClientRenderState {
         };
         self.commit_sent_frame(prepared);
         if let Self::Semantic { pending_commit, .. } = self {
-            *pending_commit = Some(PendingSurfaceCommit { claimed, previous_revision, undo });
+            *pending_commit = Some(PendingSurfaceCommit {
+                claimed,
+                previous_revision,
+                undo,
+            });
         }
     }
 
@@ -751,12 +787,21 @@ mod tests {
         let mut initial = popup_surface("unused");
         initial.popup = None;
         initial.frame = FrameData::from_ratatui_buffer(
-            &ratatui::buffer::Buffer::empty(Rect::new(0, 0, 80, 2)), None,
+            &ratatui::buffer::Buffer::empty(Rect::new(0, 0, 80, 2)),
+            None,
         );
         initial.frame.cursor = Some(CursorState {
-            x: 1, y: 0, visible: true, shape: Default::default(),
+            x: 1,
+            y: 0,
+            visible: true,
+            shape: Default::default(),
         });
-        let rect = crate::protocol::SurfaceRect { x: 0, y: 0, width: 80, height: 2 };
+        let rect = crate::protocol::SurfaceRect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 2,
+        };
         initial.panes.push(crate::protocol::PaneSurfacePane {
             pane_id: "w1:p1".into(),
             content_revision: 7,
@@ -764,7 +809,9 @@ mod tests {
             inner_rect: rect,
             scrollbar_rect: None,
             scroll: Some(crate::protocol::PaneSurfaceScrollMetrics {
-                offset_from_bottom: 1, max_offset_from_bottom: 4, viewport_rows: 2,
+                offset_from_bottom: 1,
+                max_offset_from_bottom: 4,
+                viewport_rows: 2,
             }),
             focused: true,
             mouse_reporting: false,
@@ -793,7 +840,9 @@ mod tests {
         let mut next_pane = claimed.panes[0].clone();
         next_pane.content_revision = 99;
         next_pane.scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
-            offset_from_bottom: 3, max_offset_from_bottom: 9, viewport_rows: 2,
+            offset_from_bottom: 3,
+            max_offset_from_bottom: 9,
+            viewport_rows: 2,
         });
         next_pane.focused = false;
         next_pane.mouse_reporting = true;
@@ -806,27 +855,45 @@ mod tests {
             projection_revision: claimed.projection_revision,
             base_surface_revision: claimed.surface_revision,
             surface_revision: 0,
-            rows: vec![crate::protocol::PaneSurfacePatchRow { x: 0, y: 0, cells: vec![next_cell] }],
+            rows: vec![crate::protocol::PaneSurfacePatchRow {
+                x: 0,
+                y: 0,
+                cells: vec![next_cell],
+            }],
             panes: vec![next_pane],
             cursor: Some(CursorState {
-                x: 7, y: 1, visible: false, shape: Default::default(),
+                x: 7,
+                y: 1,
+                visible: false,
+                shape: Default::default(),
             }),
         };
         let prepared = state.prepare_pane_surface_patch(patch).unwrap();
         state.commit_replaceable_frame(prepared, Arc::new(AtomicBool::new(false)));
-        assert_eq!(state.last_pane_surface().unwrap().frame.cells.as_ptr(), cells_ptr);
+        assert_eq!(
+            state.last_pane_surface().unwrap().frame.cells.as_ptr(),
+            cells_ptr
+        );
         assert_ne!(state.last_pane_surface().unwrap().panes, claimed.panes);
-        assert_ne!(state.last_pane_surface().unwrap().frame.cursor, claimed.frame.cursor);
+        assert_ne!(
+            state.last_pane_surface().unwrap().frame.cursor,
+            claimed.frame.cursor
+        );
         state.discard_pending_frame();
         assert_eq!(state.last_pane_surface(), Some(&claimed));
-        assert_eq!(state.last_pane_surface().unwrap().frame.cells.as_ptr(), cells_ptr);
+        assert_eq!(
+            state.last_pane_surface().unwrap().frame.cells.as_ptr(),
+            cells_ptr
+        );
 
         let mut next = initial;
         next.projection_revision = 3;
         next.frame.cells[0].symbol = "latest".into();
         let update = state.prepare_pane_surface(next).unwrap();
-        assert!(matches!(update.message(), ServerMessage::EndpointControl { kind, .. }
-            if kind == crate::protocol::surface_delta::MESSAGE_KIND));
+        assert!(
+            matches!(update.message(), ServerMessage::EndpointControl { kind, .. }
+            if kind == crate::protocol::surface_delta::MESSAGE_KIND)
+        );
         let decoded = decoder.decode(update.message().clone()).unwrap();
         let token = Arc::new(AtomicBool::new(true));
         state.commit_replaceable_frame(update, token);
@@ -837,7 +904,10 @@ mod tests {
         state.commit_replaceable_frame(pending, Arc::new(AtomicBool::new(false)));
         state.request_repaint();
         state.discard_pending_frame();
-        assert!(state.last_pane_surface().is_none(), "epoch reset must not resurrect an old base");
+        assert!(
+            state.last_pane_surface().is_none(),
+            "epoch reset must not resurrect an old base"
+        );
     }
 
     #[test]

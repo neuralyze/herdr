@@ -456,8 +456,13 @@ impl HeadlessServer {
         let mut render_targets = render_targets(&self.clients, self.foreground_client_id);
         for (client_id, size, _, _, mode) in &mut render_targets {
             if let ClientConnectionMode::TerminalObserve { terminal_id } = mode {
-                if self.clients.get(client_id).is_some_and(|client| client.managed_terminal.is_some()) {
-                    if let Some(remote_size) = self.runtime_for_terminal_id_string(terminal_id)
+                if self
+                    .clients
+                    .get(client_id)
+                    .is_some_and(|client| client.managed_terminal.is_some())
+                {
+                    if let Some(remote_size) = self
+                        .runtime_for_terminal_id_string(terminal_id)
                         .and_then(|runtime| runtime.terminal_dimensions())
                     {
                         *size = remote_size;
@@ -586,7 +591,10 @@ impl HeadlessServer {
             if matches!(mode, ClientConnectionMode::ClientShell) {
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     if client.shell_surface_active
-                        && client.writer.as_ref().is_some_and(|writer| writer.discard_pending_render())
+                        && client
+                            .writer
+                            .as_ref()
+                            .is_some_and(|writer| writer.discard_pending_render())
                     {
                         client.render_state.discard_pending_frame();
                     }
@@ -718,9 +726,13 @@ impl HeadlessServer {
                         continue;
                     };
                     let candidate = std::sync::Arc::new(candidate);
-                    if writer.set_shell_projection(
-                        [projection_framed, completion_framed], candidate.clone(),
-                    ).is_err() {
+                    if writer
+                        .set_shell_projection(
+                            [projection_framed, completion_framed],
+                            candidate.clone(),
+                        )
+                        .is_err()
+                    {
                         broken_clients.push(client_id);
                         continue;
                     }
@@ -731,10 +743,17 @@ impl HeadlessServer {
                 }
                 shell_projection_revision = client.shell_projection_revision;
                 if !client.shell_surface_active {
-                    if shell_projection_changed || client.deferred_render() != DeferredRender::None {
-                        match client.writer.as_ref().map(|writer| writer.send_projection()) {
+                    if shell_projection_changed || client.deferred_render() != DeferredRender::None
+                    {
+                        match client
+                            .writer
+                            .as_ref()
+                            .map(|writer| writer.send_projection())
+                        {
                             Some(Ok(())) => client.clear_deferred_render(),
-                            Some(Err(std::sync::mpsc::TrySendError::Full(_))) => client.defer_full_render(),
+                            Some(Err(std::sync::mpsc::TrySendError::Full(_))) => {
+                                client.defer_full_render()
+                            }
                             _ => broken_clients.push(client_id),
                         }
                     }
@@ -851,10 +870,13 @@ impl HeadlessServer {
             // Keep that transition ordered just like the uploads it retires.
             let retain_graphics_order = has_graphics
                 || self.native_graphics.has_resident_assets(client_id)
-                || client.render_state.last_pane_surface().is_some_and(|surface| {
-                    !surface.graphics.placements.is_empty()
-                        || !surface.graphics.retained_assets.is_empty()
-                });
+                || client
+                    .render_state
+                    .last_pane_surface()
+                    .is_some_and(|surface| {
+                        !surface.graphics.placements.is_empty()
+                            || !surface.graphics.retained_assets.is_empty()
+                    });
             let mut next_shell_graphics_delivery = None;
             let prepared =
                 if let Some((panes, splits, popup, graphics, delivery, _)) = surface_parts {
@@ -995,7 +1017,9 @@ impl HeadlessServer {
                         client.shell_graphics_delivery = delivery;
                     }
                     if let Some(claimed) = claimed {
-                        client.render_state.commit_replaceable_frame(prepared, claimed);
+                        client
+                            .render_state
+                            .commit_replaceable_frame(prepared, claimed);
                     } else {
                         client.render_state.commit_sent_frame(prepared);
                     }

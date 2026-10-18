@@ -1991,14 +1991,17 @@ impl HeadlessServer {
                     },
                     None => None,
                 };
-                let snapshot_message =
-                    match crate::protocol::endpoint::snapshot_message(&seed_snapshot, None, false) {
-                        Ok(message) => message,
-                        Err(err) => {
-                            warn!(client_id, err = %err, "failed to encode endpoint snapshot");
-                            return false;
-                        }
-                    };
+                let snapshot_message = match crate::protocol::endpoint::snapshot_message(
+                    &seed_snapshot,
+                    None,
+                    false,
+                ) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        warn!(client_id, err = %err, "failed to encode endpoint snapshot");
+                        return false;
+                    }
+                };
                 let completion_message = match crate::protocol::endpoint::agent_completions_message(
                     &completion_projection,
                 ) {
@@ -2022,7 +2025,11 @@ impl HeadlessServer {
                 }
                 self.send_to_client(client_id, completion_message);
                 self.send_to_client(client_id, snapshot_message);
-                if let Some(writer) = self.clients.get(&client_id).and_then(|client| client.writer.as_ref()) {
+                if let Some(writer) = self
+                    .clients
+                    .get(&client_id)
+                    .and_then(|client| client.writer.as_ref())
+                {
                     writer.seed_ordered_snapshot(seed_snapshot);
                 }
                 if surface_active {
@@ -2183,11 +2190,17 @@ impl HeadlessServer {
                 cell_height_px,
                 pixel_mouse,
             } => {
-                if self.clients.get(&client_id).is_some_and(|client| client.managed_terminal.is_some())
+                if self
+                    .clients
+                    .get(&client_id)
+                    .is_some_and(|client| client.managed_terminal.is_some())
                     && (!crate::protocol::endpoint::terminal_session_geometry_valid(cols, rows)
                         || cell_width_px > 4096
                         || cell_height_px > 4096
-                        || !matches!(self.clients[&client_id].mode, ClientConnectionMode::TerminalAttach { .. }))
+                        || !matches!(
+                            self.clients[&client_id].mode,
+                            ClientConnectionMode::TerminalAttach { .. }
+                        ))
                 {
                     return false;
                 }

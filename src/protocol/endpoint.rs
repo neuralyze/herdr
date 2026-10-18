@@ -10,9 +10,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ClientSurfaceSize, ServerMessage};
 #[cfg(test)]
 use super::ClientShellSnapshot;
+use super::{ClientSurfaceSize, ServerMessage};
 
 pub use super::snapshot_delta::snapshot_message;
 
@@ -150,7 +150,6 @@ pub struct EndpointServerWelcome {
     pub error: Option<EndpointHandshakeError>,
 }
 
-
 pub fn agent_completions_message(
     projection: &EndpointAgentCompletions,
 ) -> serde_json::Result<ServerMessage> {
@@ -178,7 +177,9 @@ pub fn agent_view_projection_message(
 
 impl EndpointClientHello {
     pub fn supports_snapshot_delta(&self) -> bool {
-        self.snapshot_codecs.iter().any(|codec| codec == SNAPSHOT_DELTA_CODEC_V1)
+        self.snapshot_codecs
+            .iter()
+            .any(|codec| codec == SNAPSHOT_DELTA_CODEC_V1)
     }
 
     pub fn supports_required_codecs(&self) -> bool {
@@ -333,14 +334,28 @@ mod tests {
     #[test]
     fn snapshot_delta_selection_requires_explicit_offer_and_preserves_v1_floor() {
         let mut hello = hello();
-        assert_eq!(EndpointServerWelcome::compatible_for_hello(Vec::new(), &hello).snapshot_codec, SNAPSHOT_CODEC_V1);
+        assert_eq!(
+            EndpointServerWelcome::compatible_for_hello(Vec::new(), &hello).snapshot_codec,
+            SNAPSHOT_CODEC_V1
+        );
         hello.snapshot_codecs.push(SNAPSHOT_DELTA_CODEC_V1.into());
         assert!(hello.supports_required_codecs());
         assert!(hello.supports_snapshot_delta());
-        assert_eq!(EndpointServerWelcome::compatible_for_hello(Vec::new(), &hello).snapshot_codec, SNAPSHOT_DELTA_CODEC_V1);
-        assert_eq!(EndpointServerWelcome::compatible(Vec::new()).snapshot_codec, SNAPSHOT_CODEC_V1);
-        hello.snapshot_codecs.retain(|codec| codec != SNAPSHOT_CODEC_V1);
-        assert!(!hello.supports_required_codecs(), "delta never replaces required full bootstrap");
+        assert_eq!(
+            EndpointServerWelcome::compatible_for_hello(Vec::new(), &hello).snapshot_codec,
+            SNAPSHOT_DELTA_CODEC_V1
+        );
+        assert_eq!(
+            EndpointServerWelcome::compatible(Vec::new()).snapshot_codec,
+            SNAPSHOT_CODEC_V1
+        );
+        hello
+            .snapshot_codecs
+            .retain(|codec| codec != SNAPSHOT_CODEC_V1);
+        assert!(
+            !hello.supports_required_codecs(),
+            "delta never replaces required full bootstrap"
+        );
     }
 
     #[test]
@@ -360,7 +375,8 @@ mod tests {
     #[test]
     fn snapshot_message_uses_named_json_control() {
         let snapshot = snapshot();
-        let ServerMessage::EndpointControl { kind, data } = snapshot_message(&snapshot, None, false).unwrap()
+        let ServerMessage::EndpointControl { kind, data } =
+            snapshot_message(&snapshot, None, false).unwrap()
         else {
             panic!("snapshot should use endpoint control");
         };

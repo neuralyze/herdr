@@ -591,7 +591,9 @@ impl HeadlessServer {
                         client.clear_deferred_render();
                     }
                     if let Some(claimed) = claimed {
-                        client.render_state.commit_replaceable_frame(prepared, claimed);
+                        client
+                            .render_state
+                            .commit_replaceable_frame(prepared, claimed);
                     } else {
                         client.render_state.commit_sent_frame(prepared);
                     }

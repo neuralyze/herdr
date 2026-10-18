@@ -623,7 +623,8 @@ async fn run_client_loop(
         let negotiation = endpoint::EndpointNegotiation::new(
             handshake.endpoint_methods.unwrap_or_default(),
             handshake.endpoint_capabilities.unwrap_or_default(),
-        ).with_snapshot_delta(handshake.snapshot_delta);
+        )
+        .with_snapshot_delta(handshake.snapshot_delta);
         let surface_decoder = negotiated_surface_decoder(&negotiation);
         let transport = start_endpoint_transport(
             stream,
@@ -2114,7 +2115,12 @@ async fn run_client_loop(
                             }
                             continue;
                         }
-                        let snapshot = match write_stream.decode_control(&endpoint_id, generation, &kind, &data) {
+                        let snapshot = match write_stream.decode_control(
+                            &endpoint_id,
+                            generation,
+                            &kind,
+                            &data,
+                        ) {
                             Ok(endpoint::EndpointControlMessage::HealthPong) => continue,
                             Ok(endpoint::EndpointControlMessage::AgentViewProjection(
                                 projection,
