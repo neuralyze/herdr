@@ -1816,6 +1816,9 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
     }
 
     consume_paused_shell(&slow_writer, &mut slow);
+    assert!(server.handle_server_event(ServerEvent::ClientWriterDrained { client_id: 8 }));
+    server.render_and_stream();
+    consume_paused_shell(&slow_writer, &mut slow);
     assert!(frame_text(&slow.compose(80, 24).expect("slow display")).contains("PEER_THREE"));
     shutdown_test_runtimes(&mut server);
 }
@@ -1859,6 +1862,9 @@ async fn full_render_backpressure_does_not_disable_responsive_peer_patches() {
     assert!(
         frame_text(&responsive.compose(80, 24).expect("responsive display")).contains("AFTER_FULL")
     );
+    consume_paused_shell(&slow_writer, &mut slow);
+    assert!(server.handle_server_event(ServerEvent::ClientWriterDrained { client_id: 8 }));
+    server.render_and_stream();
     consume_paused_shell(&slow_writer, &mut slow);
     assert!(frame_text(&slow.compose(80, 24).expect("slow display")).contains("AFTER_FULL"));
     shutdown_test_runtimes(&mut server);
