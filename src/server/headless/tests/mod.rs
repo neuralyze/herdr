@@ -4396,7 +4396,12 @@ fn backpressured_observer_skips_runtime_access_and_recovers_without_new_output()
             b"\r\x1b[2KTHIRD".as_slice(),
             b"\r\x1b[2KLATEST".as_slice(),
         ] {
-            server.app.terminal_runtimes[&terminal_id].test_process_pty_bytes(bytes);
+            server
+                .app
+                .terminal_runtimes
+                .get(&terminal_id)
+                .expect("source terminal")
+                .test_process_pty_bytes(bytes);
             server.render_and_stream();
         }
         let runtime = server.app.terminal_runtimes.remove(&terminal_id).unwrap();
