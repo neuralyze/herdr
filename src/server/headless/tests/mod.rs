@@ -1305,16 +1305,12 @@ fn recv_pane_surface_patch(
         other => panic!("{context}: expected pane surface patch, got {other:?}"),
     }
 }
-fn drain_projection_and_surface(
+
+fn consume_paused_shell(
     writer: &ClientWriter,
-) -> (
-    Option<Box<protocol::ClientShellSnapshot>>,
-    Vec<ServerMessage>,
-) {
-    let mut snapshot: Option<Box<protocol::ClientShellSnapshot>> = None;
-    let mut view: Option<protocol::endpoint::EndpointAgentViewProjection> = None;
-    let mut completions: Option<protocol::endpoint::EndpointAgentCompletions> = None;
-    let mut surfaces = Vec::new();
+    receiver: &mut crate::client::ClientShellState,
+) -> bool {
+    let mut patched = false;
     for bytes in writer.test_drain() {
         let mut cursor = std::io::Cursor::new(bytes);
         while cursor.position() < cursor.get_ref().len() as u64 {
@@ -1324,57 +1320,32 @@ fn drain_projection_and_surface(
                 ServerMessage::EndpointControl { kind, data }
                     if kind == protocol::endpoint::ENDPOINT_SNAPSHOT_KIND =>
                 {
-                    snapshot = Some(Box::new(serde_json::from_str(&data).unwrap()));
+                    receiver.set_snapshot(Box::new(serde_json::from_str(&data).unwrap()));
                 }
                 ServerMessage::EndpointControl { kind, data }
                     if kind == protocol::endpoint::AGENT_VIEW_PROJECTION_KIND =>
                 {
-                    view = Some(serde_json::from_str(&data).unwrap());
+                    let projection: protocol::endpoint::EndpointAgentViewProjection =
+                        serde_json::from_str(&data).unwrap();
+                    assert!(projection.view.is_none(), "fixture has no agent view");
                 }
                 ServerMessage::EndpointControl { kind, data }
                     if kind == protocol::endpoint::AGENT_COMPLETIONS_KIND =>
                 {
-                    completions = Some(serde_json::from_str(&data).unwrap());
+                    let completions: protocol::endpoint::EndpointAgentCompletions =
+                        serde_json::from_str(&data).unwrap();
+                    assert!(
+                        completions.completions.is_empty(),
+                        "fixture has no agent completions"
+                    );
                 }
-                message => surfaces.push(message),
+                ServerMessage::PaneSurface(surface) => receiver.set_pane_surface(surface),
+                ServerMessage::PaneSurfacePatch(patch) => {
+                    let _ = receiver.apply_pane_surface_patch(patch);
+                    patched = true;
+                }
+                other => panic!("unexpected shell presentation: {other:?}"),
             }
-        }
-    }
-    if let Some(snapshot) = &snapshot {
-        let view = view.unwrap();
-        let completions = completions.unwrap();
-        assert_eq!(view.boot_id, snapshot.boot_id);
-        assert_eq!(view.revision, snapshot.revision);
-        assert_eq!(completions.boot_id, snapshot.boot_id);
-        assert_eq!(completions.revision, snapshot.revision);
-        let label = view
-            .view
-            .map(serde_json::from_value::<crate::api::schema::AgentViewSetParams>)
-            .transpose()
-            .unwrap()
-            .and_then(|view| view.label);
-        assert_eq!(label, snapshot.agent_view_label);
-    }
-    (snapshot, surfaces)
-}
-
-fn consume_paused_shell(
-    writer: &ClientWriter,
-    receiver: &mut crate::client::ClientShellState,
-) -> bool {
-    let (snapshot, messages) = drain_projection_and_surface(writer);
-    if let Some(snapshot) = snapshot {
-        receiver.set_snapshot(snapshot);
-    }
-    let mut patched = false;
-    for message in messages {
-        match message {
-            ServerMessage::PaneSurface(surface) => receiver.set_pane_surface(surface),
-            ServerMessage::PaneSurfacePatch(patch) => {
-                let _ = receiver.apply_pane_surface_patch(patch);
-                patched = true;
-            }
-            other => panic!("unexpected shell presentation: {other:?}"),
         }
     }
     patched

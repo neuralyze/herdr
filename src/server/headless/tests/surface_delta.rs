@@ -229,6 +229,58 @@ async fn surface_delta_preserves_graphics_baseline_through_queue_recovery() {
     shutdown_test_runtimes(&mut server);
 }
 
+fn drain_projection_and_surface(
+    writer: &ClientWriter,
+) -> (
+    Option<Box<protocol::ClientShellSnapshot>>,
+    Vec<ServerMessage>,
+) {
+    let mut snapshot: Option<Box<protocol::ClientShellSnapshot>> = None;
+    let mut view: Option<protocol::endpoint::EndpointAgentViewProjection> = None;
+    let mut completions: Option<protocol::endpoint::EndpointAgentCompletions> = None;
+    let mut surfaces = Vec::new();
+    for bytes in writer.test_drain() {
+        let mut cursor = std::io::Cursor::new(bytes);
+        while cursor.position() < cursor.get_ref().len() as u64 {
+            let message: ServerMessage =
+                protocol::read_message(&mut cursor, protocol::MAX_GRAPHICS_FRAME_SIZE).unwrap();
+            match message {
+                ServerMessage::EndpointControl { kind, data }
+                    if kind == protocol::endpoint::ENDPOINT_SNAPSHOT_KIND =>
+                {
+                    snapshot = Some(Box::new(serde_json::from_str(&data).unwrap()));
+                }
+                ServerMessage::EndpointControl { kind, data }
+                    if kind == protocol::endpoint::AGENT_VIEW_PROJECTION_KIND =>
+                {
+                    view = Some(serde_json::from_str(&data).unwrap());
+                }
+                ServerMessage::EndpointControl { kind, data }
+                    if kind == protocol::endpoint::AGENT_COMPLETIONS_KIND =>
+                {
+                    completions = Some(serde_json::from_str(&data).unwrap());
+                }
+                message => surfaces.push(message),
+            }
+        }
+    }
+    if let Some(snapshot) = &snapshot {
+        let view = view.unwrap();
+        let completions = completions.unwrap();
+        assert_eq!(view.boot_id, snapshot.boot_id);
+        assert_eq!(view.revision, snapshot.revision);
+        assert_eq!(completions.boot_id, snapshot.boot_id);
+        assert_eq!(completions.revision, snapshot.revision);
+        let label = view
+            .view
+            .map(serde_json::from_value::<crate::api::schema::AgentViewSetParams>)
+            .transpose()
+            .unwrap()
+            .and_then(|view| view.label);
+        assert_eq!(label, snapshot.agent_view_label);
+    }
+    (snapshot, surfaces)
+}
 #[tokio::test]
 async fn replaced_pending_surface_and_patch_resync_before_delta_scroll_chain() {
     assert_replaced_pending_resync(false).await;
