@@ -1,5 +1,8 @@
 //! Virtual rendering helpers for headless client frame streaming.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
 use ratatui::layout::{Position, Rect, Size};
 
@@ -21,6 +24,7 @@ pub(crate) enum ClientRenderState {
         surface_delta: bool,
         surface_scroll: bool,
         recompute_pending: bool,
+        pending_commit: Option<PendingSurfaceCommit>,
     },
     /// Terminal-ANSI clients keep a terminal diff encoder and sequence number.
     TerminalAnsi {
@@ -28,6 +32,20 @@ pub(crate) enum ClientRenderState {
         seq: u64,
         repaint_pending: bool,
     },
+}
+
+/// A queue claim makes a presentation non-discardable, not client-acknowledged.
+/// Keep only the inverse of the one replaceable update; retained row updates
+/// copy changed cells, never an entire terminal grid.
+pub(crate) struct PendingSurfaceCommit {
+    claimed: Arc<AtomicBool>,
+    previous_revision: u64,
+    undo: SurfaceUndo,
+}
+
+enum SurfaceUndo {
+    Replace(Option<Box<PaneSurfaceFrame>>),
+    Patch(PaneSurfacePatch),
 }
 
 impl ClientRenderState {
@@ -40,6 +58,7 @@ impl ClientRenderState {
                 surface_delta: false,
                 surface_scroll: false,
                 recompute_pending: false,
+                pending_commit: None,
             },
             RenderEncoding::TerminalAnsi => Self::TerminalAnsi {
                 blit_encoder: BlitEncoder::new(),
@@ -92,7 +111,10 @@ impl ClientRenderState {
 
     pub(crate) fn reset_baseline(&mut self) {
         match self {
-            Self::Semantic { last_surface, .. } => *last_surface = None,
+            Self::Semantic { last_surface, pending_commit, .. } => {
+                *last_surface = None;
+                *pending_commit = None;
+            }
             Self::TerminalAnsi {
                 blit_encoder,
                 repaint_pending,
@@ -106,7 +128,10 @@ impl ClientRenderState {
 
     pub(crate) fn request_repaint(&mut self) {
         match self {
-            Self::Semantic { last_surface, .. } => *last_surface = None,
+            Self::Semantic { last_surface, pending_commit, .. } => {
+                *last_surface = None;
+                *pending_commit = None;
+            }
             Self::TerminalAnsi {
                 repaint_pending, ..
             } => *repaint_pending = true,
@@ -281,7 +306,88 @@ impl ClientRenderState {
         })
     }
 
+    /// Roll back only a presentation actually removed from the replaceable slot.
+    /// Claimed/partially written and ordered updates remain valid stream bases.
+    pub(crate) fn discard_pending_frame(&mut self) {
+        let Self::Semantic { last_surface, surface_revision, pending_commit, .. } = self else {
+            return;
+        };
+        let Some(pending) = pending_commit.take() else {
+            return;
+        };
+        if pending.claimed.load(Ordering::Acquire) {
+            return;
+        }
+        *surface_revision = pending.previous_revision;
+        match pending.undo {
+            SurfaceUndo::Replace(previous) => *last_surface = previous,
+            SurfaceUndo::Patch(inverse) => {
+                let surface = last_surface.as_deref_mut().expect("pending patch baseline");
+                // The inverse swaps the revisions as well as restoring changed cells.
+                apply_pane_surface_patch(surface, &inverse);
+            }
+        }
+    }
+
+    pub(crate) fn commit_replaceable_frame(
+        &mut self,
+        prepared: PreparedRender,
+        claimed: Arc<AtomicBool>,
+    ) {
+        let Self::Semantic { last_surface, surface_revision, pending_commit, .. } = self else {
+            self.commit_sent_frame(prepared);
+            return;
+        };
+        debug_assert!(pending_commit.as_ref().is_none_or(|pending| {
+            pending.claimed.load(Ordering::Acquire)
+        }));
+        // Release a claimed update's old baseline before retaining the next inverse.
+        *pending_commit = None;
+        let previous_revision = *surface_revision;
+        let undo = match &prepared {
+            PreparedRender::Semantic { .. } => SurfaceUndo::Replace(last_surface.take()),
+            PreparedRender::SemanticPatch { message, encoded } => {
+                let patch = match (encoded, message) {
+                    (Some(patch), _) => patch.as_ref(),
+                    (None, ServerMessage::PaneSurfacePatch(patch)) => patch,
+                    _ => unreachable!("semantic patch payload"),
+                };
+                let surface = last_surface.as_deref().expect("prepared patch baseline");
+                let rows = patch.rows.iter().map(|row| {
+                    let start = usize::from(row.y) * usize::from(surface.frame.width)
+                        + usize::from(row.x);
+                    crate::protocol::PaneSurfacePatchRow {
+                        x: row.x,
+                        y: row.y,
+                        cells: surface.frame.cells[start..start + row.cells.len()].to_vec(),
+                    }
+                }).collect();
+                let panes = patch.panes.iter().map(|updated| {
+                    surface.panes.iter().find(|pane| pane.pane_id == updated.pane_id)
+                        .expect("prepared patch pane").clone()
+                }).collect();
+                SurfaceUndo::Patch(PaneSurfacePatch {
+                    boot_id: surface.boot_id.clone(),
+                    projection_revision: surface.projection_revision,
+                    base_surface_revision: patch.surface_revision,
+                    surface_revision: surface.surface_revision,
+                    rows,
+                    panes,
+                    cursor: surface.frame.cursor.clone(),
+                })
+            }
+            PreparedRender::TerminalAnsi { .. } => unreachable!("semantic render state"),
+        };
+        self.commit_sent_frame(prepared);
+        if let Self::Semantic { pending_commit, .. } = self {
+            *pending_commit = Some(PendingSurfaceCommit { claimed, previous_revision, undo });
+        }
+    }
+
     pub(crate) fn commit_sent_frame(&mut self, prepared: PreparedRender) {
+        if let Self::Semantic { pending_commit, .. } = self {
+            *pending_commit = None;
+        }
         match (self, prepared) {
             (
                 Self::Semantic {
@@ -636,6 +742,102 @@ mod tests {
             })),
             graphics: crate::protocol::SurfaceGraphicsScene::default(),
         }
+    }
+
+    #[test]
+    fn replaceable_surface_undo_preserves_claimed_base_and_retained_grid_allocation() {
+        let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
+        state.enable_surface_delta(true);
+        let mut initial = popup_surface("unused");
+        initial.popup = None;
+        initial.frame = FrameData::from_ratatui_buffer(
+            &ratatui::buffer::Buffer::empty(Rect::new(0, 0, 80, 2)), None,
+        );
+        initial.frame.cursor = Some(CursorState {
+            x: 1, y: 0, visible: true, shape: Default::default(),
+        });
+        let rect = crate::protocol::SurfaceRect { x: 0, y: 0, width: 80, height: 2 };
+        initial.panes.push(crate::protocol::PaneSurfacePane {
+            pane_id: "w1:p1".into(),
+            content_revision: 7,
+            rect,
+            inner_rect: rect,
+            scrollbar_rect: None,
+            scroll: Some(crate::protocol::PaneSurfaceScrollMetrics {
+                offset_from_bottom: 1, max_offset_from_bottom: 4, viewport_rows: 2,
+            }),
+            focused: true,
+            mouse_reporting: false,
+            sgr_pixel_mouse: false,
+            alternate_screen_active: false,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+        let mut decoder = crate::protocol::surface_reuse::Decoder::new(true, false);
+        let seed = state.prepare_pane_surface(initial.clone()).unwrap();
+        decoder.decode(seed.message().clone()).unwrap();
+        state.commit_sent_frame(seed);
+        let claimed = state.last_pane_surface().unwrap().clone();
+        let cells_ptr = state.last_pane_surface().unwrap().frame.cells.as_ptr();
+        for number in 0..10_000 {
+            let mut next = initial.clone();
+            next.projection_revision = 2;
+            next.frame.cells[0].symbol = number.to_string();
+            let pending = state.prepare_pane_surface(next).unwrap();
+            state.commit_replaceable_frame(pending, Arc::new(AtomicBool::new(false)));
+            state.discard_pending_frame();
+            assert_eq!(state.last_pane_surface(), Some(&claimed));
+        }
+        let mut next_cell = claimed.frame.cells[0].clone();
+        next_cell.symbol = "pending".into();
+        let mut next_pane = claimed.panes[0].clone();
+        next_pane.content_revision = 99;
+        next_pane.scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+            offset_from_bottom: 3, max_offset_from_bottom: 9, viewport_rows: 2,
+        });
+        next_pane.focused = false;
+        next_pane.mouse_reporting = true;
+        next_pane.sgr_pixel_mouse = true;
+        next_pane.alternate_screen_active = true;
+        next_pane.pixel_width = 640;
+        next_pane.pixel_height = 32;
+        let patch = PaneSurfacePatch {
+            boot_id: claimed.boot_id.clone(),
+            projection_revision: claimed.projection_revision,
+            base_surface_revision: claimed.surface_revision,
+            surface_revision: 0,
+            rows: vec![crate::protocol::PaneSurfacePatchRow { x: 0, y: 0, cells: vec![next_cell] }],
+            panes: vec![next_pane],
+            cursor: Some(CursorState {
+                x: 7, y: 1, visible: false, shape: Default::default(),
+            }),
+        };
+        let prepared = state.prepare_pane_surface_patch(patch).unwrap();
+        state.commit_replaceable_frame(prepared, Arc::new(AtomicBool::new(false)));
+        assert_eq!(state.last_pane_surface().unwrap().frame.cells.as_ptr(), cells_ptr);
+        assert_ne!(state.last_pane_surface().unwrap().panes, claimed.panes);
+        assert_ne!(state.last_pane_surface().unwrap().frame.cursor, claimed.frame.cursor);
+        state.discard_pending_frame();
+        assert_eq!(state.last_pane_surface(), Some(&claimed));
+        assert_eq!(state.last_pane_surface().unwrap().frame.cells.as_ptr(), cells_ptr);
+
+        let mut next = initial;
+        next.projection_revision = 3;
+        next.frame.cells[0].symbol = "latest".into();
+        let update = state.prepare_pane_surface(next).unwrap();
+        assert!(matches!(update.message(), ServerMessage::EndpointControl { kind, .. }
+            if kind == crate::protocol::surface_delta::MESSAGE_KIND));
+        let decoded = decoder.decode(update.message().clone()).unwrap();
+        let token = Arc::new(AtomicBool::new(true));
+        state.commit_replaceable_frame(update, token);
+        state.discard_pending_frame();
+        assert!(matches!(decoded, ServerMessage::PaneSurface(surface)
+            if Some(&surface) == state.last_pane_surface()));
+        let pending = state.prepare_pane_surface(popup_surface("epoch")).unwrap();
+        state.commit_replaceable_frame(pending, Arc::new(AtomicBool::new(false)));
+        state.request_repaint();
+        state.discard_pending_frame();
+        assert!(state.last_pane_surface().is_none(), "epoch reset must not resurrect an old base");
     }
 
     #[test]

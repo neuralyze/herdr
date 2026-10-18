@@ -569,6 +569,15 @@ impl HeadlessServer {
                 // The writer-drained event schedules recovery, even if pane output stops.
                 continue;
             }
+            if matches!(mode, ClientConnectionMode::ClientShell) {
+                if let Some(client) = self.clients.get_mut(&client_id) {
+                    if client.shell_surface_active
+                        && client.writer.as_ref().is_some_and(|writer| writer.discard_pending_render())
+                    {
+                        client.render_state.discard_pending_frame();
+                    }
+                }
+            }
             let area = Rect::new(0, 0, cols, rows);
             let shell_target = self.shell_target_for_client(client_id);
             let shell_tab_id = self.shell_tab_id_for_client(client_id);
@@ -623,6 +632,7 @@ impl HeadlessServer {
                 None
             };
             let mut shell_projection_revision = 0;
+            let mut shell_projection_changed = false;
             if matches!(mode, ClientConnectionMode::ClientShell) {
                 let location = self
                     .clients
@@ -645,7 +655,7 @@ impl HeadlessServer {
                     self.server_config_diagnostic_without_keybindings.clone()
                 };
                 candidate.revision = client.shell_projection_revision;
-                if client.shell_snapshot.as_ref() != Some(&candidate)
+                if client.shell_snapshot.as_deref() != Some(&candidate)
                     || client.shell_agent_completions.as_ref() != Some(&completions)
                     || client.shell_agent_view != agent_view
                 {
@@ -666,49 +676,25 @@ impl HeadlessServer {
                                 continue;
                             }
                         };
-                    let projection_message = if agent_view.is_some()
-                        || client.shell_agent_view.is_some()
-                    {
+                    // Every bundle contains the complete view, including None. A
+                    // replaced intermediate "set" must not swallow its later clear.
+                    let projection_message =
                         match crate::protocol::endpoint::agent_view_projection_message(
                             &candidate.boot_id,
                             candidate.revision,
                             agent_view.as_ref(),
                         ) {
-                            Ok(message) => Some(message),
+                            Ok(message) => message,
                             Err(err) => {
                                 warn!(client_id, err = %err, "failed to encode endpoint agent view");
                                 broken_clients.push(client_id);
                                 continue;
                             }
-                        }
-                    } else {
-                        None
-                    };
-                    let snapshot_message =
-                        match crate::protocol::endpoint::snapshot_message(&candidate) {
-                            Ok(message) => message,
-                            Err(err) => {
-                                warn!(client_id, err = %err, "failed to encode endpoint snapshot");
-                                broken_clients.push(client_id);
-                                continue;
-                            }
                         };
-                    let projection_framed = match projection_message
-                        .as_ref()
-                        .map(Self::frame_server_message)
-                        .transpose()
-                    {
+                    let projection_framed = match Self::frame_server_message(&projection_message) {
                         Ok(framed) => framed,
                         Err(err) => {
                             warn!(client_id, err = %err, "failed to frame endpoint agent view");
-                            broken_clients.push(client_id);
-                            continue;
-                        }
-                    };
-                    let snapshot_framed = match Self::frame_server_message(&snapshot_message) {
-                        Ok(framed) => framed,
-                        Err(err) => {
-                            warn!(client_id, err = %err, "failed to frame endpoint snapshot");
                             broken_clients.push(client_id);
                             continue;
                         }
@@ -717,20 +703,27 @@ impl HeadlessServer {
                         broken_clients.push(client_id);
                         continue;
                     };
-                    if projection_framed.is_some_and(|framed| writer.control.send(framed).is_err())
-                        || writer.control.send(completion_framed).is_err()
-                        || writer.control.send(snapshot_framed).is_err()
-                    {
+                    let candidate = std::sync::Arc::new(candidate);
+                    if writer.set_shell_projection(
+                        [projection_framed, completion_framed], candidate.clone(),
+                    ).is_err() {
                         broken_clients.push(client_id);
                         continue;
                     }
                     client.shell_snapshot = Some(candidate);
                     client.shell_agent_completions = Some(completions);
                     client.shell_agent_view = agent_view;
+                    shell_projection_changed = true;
                 }
                 shell_projection_revision = client.shell_projection_revision;
                 if !client.shell_surface_active {
-                    client.clear_deferred_render();
+                    if shell_projection_changed || client.deferred_render() != DeferredRender::None {
+                        match client.writer.as_ref().map(|writer| writer.send_projection()) {
+                            Some(Ok(())) => client.clear_deferred_render(),
+                            Some(Err(std::sync::mpsc::TrySendError::Full(_))) => client.defer_full_render(),
+                            _ => broken_clients.push(client_id),
+                        }
+                    }
                     continue;
                 }
             }
@@ -839,6 +832,14 @@ impl HeadlessServer {
                     !graphics.assets.is_empty()
                         || !graphics.placements.is_empty()
                         || !graphics.retained_assets.is_empty()
+                });
+            // Removing a scene also advances native bank/delivery bookkeeping.
+            // Keep that transition ordered just like the uploads it retires.
+            let retain_graphics_order = has_graphics
+                || self.native_graphics.has_resident_assets(client_id)
+                || client.render_state.last_pane_surface().is_some_and(|surface| {
+                    !surface.graphics.placements.is_empty()
+                        || !surface.graphics.retained_assets.is_empty()
                 });
             let mut next_shell_graphics_delivery = None;
             let prepared =
@@ -961,12 +962,14 @@ impl HeadlessServer {
                 serialized.extend_from_slice(&file_frame);
             }
             let send = if native_upload.is_some() || self.native_graphics.is_pending(client_id) {
-                writer.render.send_ordered(serialized)
+                writer.render.send_ordered(serialized).map(|()| None)
+            } else if retain_graphics_order {
+                writer.render.try_send_protected(serialized).map(|()| None)
             } else {
-                writer.render.try_send(serialized)
+                writer.render.try_send_tracked(serialized).map(Some)
             };
             match send {
-                Ok(()) => {
+                Ok(claimed) => {
                     if let Some((graphics, inline_assets)) = prepared.queued_surface_graphics() {
                         self.native_graphics
                             .commit_scene(client_id, graphics, inline_assets);
@@ -977,7 +980,11 @@ impl HeadlessServer {
                     if let Some(delivery) = next_shell_graphics_delivery {
                         client.shell_graphics_delivery = delivery;
                     }
-                    client.render_state.commit_sent_frame(prepared);
+                    if let Some(claimed) = claimed {
+                        client.render_state.commit_replaceable_frame(prepared, claimed);
+                    } else {
+                        client.render_state.commit_sent_frame(prepared);
+                    }
                     if shell_graphics_pending || shell_assets_deferred {
                         client.defer_full_render();
                     } else {

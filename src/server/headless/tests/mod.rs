@@ -20,11 +20,20 @@ fn client_shell_projection(
     protocol::endpoint::EndpointAgentCompletions,
 ) {
     let read_control = |expected| {
-        let ServerMessage::EndpointControl { kind, data } = read_server_message(
-            receiver
-                .recv_timeout(Duration::from_secs(1))
-                .expect("endpoint projection"),
-        ) else {
+        let mut message = read_server_message(
+            receiver.recv_timeout(Duration::from_secs(1)).expect("endpoint projection"),
+        );
+        if let ServerMessage::EndpointControl { kind, data } = &message {
+            if kind == protocol::endpoint::AGENT_VIEW_PROJECTION_KIND {
+                let clear: protocol::endpoint::EndpointAgentViewProjection =
+                    serde_json::from_str(data).unwrap();
+                assert!(clear.view.is_none(), "non-empty views must be checked explicitly");
+                message = read_server_message(
+                    receiver.recv_timeout(Duration::from_secs(1)).expect("endpoint completions"),
+                );
+            }
+        }
+        let ServerMessage::EndpointControl { kind, data } = message else {
             panic!("expected endpoint control {expected}");
         };
         assert_eq!(kind, expected);

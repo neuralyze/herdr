@@ -282,7 +282,7 @@ fn profile_snapshot_encoding(
                 bincode::serde::encode_to_vec(companion, bincode::config::standard())
                     .expect("benchmark completion projection should frame"),
             );
-            let message = crate::protocol::endpoint::snapshot_message(&snapshot)
+            let message = crate::protocol::endpoint::snapshot_message(&snapshot, None, false)
                 .expect("benchmark snapshot should serialize");
             black_box(
                 bincode::serde::encode_to_vec(message, bincode::config::standard())

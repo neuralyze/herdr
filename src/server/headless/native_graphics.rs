@@ -72,6 +72,11 @@ impl NativeGraphics {
     pub(super) fn is_pending(&self, client: u64) -> bool {
         self.pending.contains_key(&client)
     }
+    /// Bank history survives render-baseline invalidation. Its removal must reach
+    /// the client before a later upload may reuse a bank still displayed there.
+    pub(super) fn has_resident_assets(&self, client: u64) -> bool {
+        self.acknowledged_slots.contains_key(&client)
+    }
     pub(super) fn can_hold(&self, client: u64, scene: &SurfaceGraphicsScene) -> bool {
         let Some(pending) = self.pending.get(&client) else {
             return true;

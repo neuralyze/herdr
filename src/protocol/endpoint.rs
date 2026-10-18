@@ -10,12 +10,17 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ClientShellSnapshot, ClientSurfaceSize, ServerMessage};
+use super::{ClientSurfaceSize, ServerMessage};
+#[cfg(test)]
+use super::ClientShellSnapshot;
+
+pub use super::snapshot_delta::snapshot_message;
 
 pub const ENDPOINT_PROTOCOL_GENERATION: u32 = 1;
 pub const ENDPOINT_HELLO_KIND: &str = "endpoint.hello.v1";
 pub const ENDPOINT_WELCOME_KIND: &str = "endpoint.welcome.v1";
 pub const SNAPSHOT_CODEC_V1: &str = "shell.snapshot.v1";
+pub const SNAPSHOT_DELTA_CODEC_V1: &str = "shell.snapshot.delta.v1";
 pub const ENDPOINT_SNAPSHOT_KIND: &str = SNAPSHOT_CODEC_V1;
 pub const SURFACE_CODEC_V1: &str = "shell.surface.v1";
 pub const INPUT_CODEC_V1: &str = "shell.input.semantic.v1";
@@ -106,12 +111,6 @@ pub struct EndpointServerWelcome {
     pub error: Option<EndpointHandshakeError>,
 }
 
-pub fn snapshot_message(snapshot: &ClientShellSnapshot) -> serde_json::Result<ServerMessage> {
-    Ok(ServerMessage::EndpointControl {
-        kind: ENDPOINT_SNAPSHOT_KIND.into(),
-        data: serde_json::to_string(snapshot)?,
-    })
-}
 
 pub fn agent_completions_message(
     projection: &EndpointAgentCompletions,
@@ -139,6 +138,10 @@ pub fn agent_view_projection_message(
 }
 
 impl EndpointClientHello {
+    pub fn supports_snapshot_delta(&self) -> bool {
+        self.snapshot_codecs.iter().any(|codec| codec == SNAPSHOT_DELTA_CODEC_V1)
+    }
+
     pub fn supports_required_codecs(&self) -> bool {
         self.snapshot_codecs
             .iter()
@@ -156,6 +159,14 @@ impl EndpointClientHello {
 }
 
 impl EndpointServerWelcome {
+    pub fn compatible_for_hello(methods: Vec<String>, hello: &EndpointClientHello) -> Self {
+        let mut welcome = Self::compatible(methods);
+        if hello.supports_snapshot_delta() {
+            welcome.snapshot_codec = SNAPSHOT_DELTA_CODEC_V1.into();
+        }
+        welcome
+    }
+
     pub fn compatible(methods: Vec<String>) -> Self {
         Self {
             generation: ENDPOINT_PROTOCOL_GENERATION,
@@ -281,6 +292,19 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_delta_selection_requires_explicit_offer_and_preserves_v1_floor() {
+        let mut hello = hello();
+        assert_eq!(EndpointServerWelcome::compatible_for_hello(Vec::new(), &hello).snapshot_codec, SNAPSHOT_CODEC_V1);
+        hello.snapshot_codecs.push(SNAPSHOT_DELTA_CODEC_V1.into());
+        assert!(hello.supports_required_codecs());
+        assert!(hello.supports_snapshot_delta());
+        assert_eq!(EndpointServerWelcome::compatible_for_hello(Vec::new(), &hello).snapshot_codec, SNAPSHOT_DELTA_CODEC_V1);
+        assert_eq!(EndpointServerWelcome::compatible(Vec::new()).snapshot_codec, SNAPSHOT_CODEC_V1);
+        hello.snapshot_codecs.retain(|codec| codec != SNAPSHOT_CODEC_V1);
+        assert!(!hello.supports_required_codecs(), "delta never replaces required full bootstrap");
+    }
+
+    #[test]
     fn frozen_generation_one_snapshot_decodes() {
         let snapshot: ClientShellSnapshot = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -297,7 +321,7 @@ mod tests {
     #[test]
     fn snapshot_message_uses_named_json_control() {
         let snapshot = snapshot();
-        let ServerMessage::EndpointControl { kind, data } = snapshot_message(&snapshot).unwrap()
+        let ServerMessage::EndpointControl { kind, data } = snapshot_message(&snapshot, None, false).unwrap()
         else {
             panic!("snapshot should use endpoint control");
         };
@@ -335,7 +359,7 @@ mod tests {
 
     #[test]
     fn snapshot_json_tolerates_future_fields_and_command_actions() {
-        let mut snapshot = match snapshot_message(&snapshot()).unwrap() {
+        let mut snapshot = match snapshot_message(&snapshot(), None, false).unwrap() {
             ServerMessage::EndpointControl { data, .. } => {
                 serde_json::from_str::<serde_json::Value>(&data).unwrap()
             }

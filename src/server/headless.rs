@@ -1991,7 +1991,7 @@ impl HeadlessServer {
                     None => None,
                 };
                 let snapshot_message =
-                    match crate::protocol::endpoint::snapshot_message(&seed_snapshot) {
+                    match crate::protocol::endpoint::snapshot_message(&seed_snapshot, None, false) {
                         Ok(message) => message,
                         Err(err) => {
                             warn!(client_id, err = %err, "failed to encode endpoint snapshot");
@@ -2008,7 +2008,8 @@ impl HeadlessServer {
                     }
                 };
                 connection.shell_location = Some(location);
-                connection.shell_snapshot = Some(seed_snapshot);
+                let seed_snapshot = std::sync::Arc::new(seed_snapshot);
+                connection.shell_snapshot = Some(seed_snapshot.clone());
                 connection.shell_agent_completions = Some(completion_projection);
                 connection.shell_agent_view = agent_view;
                 self.clients.insert(client_id, connection);
@@ -2020,6 +2021,9 @@ impl HeadlessServer {
                 }
                 self.send_to_client(client_id, completion_message);
                 self.send_to_client(client_id, snapshot_message);
+                if let Some(writer) = self.clients.get(&client_id).and_then(|client| client.writer.as_ref()) {
+                    writer.seed_ordered_snapshot(seed_snapshot);
+                }
                 if surface_active {
                     self.foreground_client_id = Some(client_id);
                 }

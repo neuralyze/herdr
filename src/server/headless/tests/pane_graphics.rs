@@ -128,7 +128,7 @@ async fn first_kitty_image_updates_retained_surface_without_full_redraw() {
     ));
 
     // A full output queue must not mark unsent pixels as delivered.
-    fill_render_lane(&server);
+    let original_writer = fill_render_lane(&mut server);
     write_shared_test_pane(
         &mut server,
         pane_id,
@@ -142,7 +142,7 @@ async fn first_kitty_image_updates_retained_surface_without_full_redraw() {
         .graphics
         .placements
         .is_empty());
-    let _ = receive_render(&client_rx, Duration::from_millis(100));
+    server.clients.get_mut(&1).unwrap().writer = Some(original_writer);
     server.render_and_stream();
     let ServerMessage::PaneSurface(recovered) =
         read_server_message(receive_render(&client_rx, Duration::from_millis(100)))
@@ -585,14 +585,12 @@ async fn client_shell_evicts_least_recently_visible_offscreen_terminal_images() 
     assert_eq!(retained_ids(&rehidden), expected);
 }
 
-fn fill_render_lane(server: &HeadlessServer) {
+fn fill_render_lane(server: &mut HeadlessServer) -> ClientWriter {
     let queued = HeadlessServer::frame_server_message(&ServerMessage::ReloadSoundConfig)
         .expect("dummy frame");
-    server.clients[&1]
-        .writer
-        .as_ref()
-        .unwrap()
-        .test_fill_render(queued);
+    let paused = ClientWriter::test_paused();
+    paused.test_fill_render(queued);
+    server.clients.get_mut(&1).unwrap().writer.replace(paused).unwrap()
 }
 
 #[tokio::test]

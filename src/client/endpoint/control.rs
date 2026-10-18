@@ -17,6 +17,7 @@ pub(crate) enum EndpointControlMessage {
 pub(crate) fn decode_endpoint_control(
     kind: &str,
     data: &str,
+    snapshots: &mut crate::protocol::snapshot_delta::SnapshotDecoder,
 ) -> Result<EndpointControlMessage, String> {
     if kind == crate::protocol::endpoint::HEALTH_PONG_KIND {
         return Ok(EndpointControlMessage::HealthPong);
@@ -53,10 +54,8 @@ pub(crate) fn decode_endpoint_control(
             },
         ));
     }
-    if kind == crate::protocol::endpoint::ENDPOINT_SNAPSHOT_KIND {
-        let snapshot = serde_json::from_str(data)
-            .map_err(|error| format!("invalid endpoint snapshot: {error}"))?;
-        return Ok(EndpointControlMessage::Snapshot(Box::new(snapshot)));
+    if let Some(snapshot) = snapshots.decode(kind, data)? {
+        return Ok(EndpointControlMessage::Snapshot(snapshot));
     }
     if kind.starts_with("shell.snapshot.") {
         return Err(format!(
@@ -74,6 +73,10 @@ pub(crate) fn protocol_failure_is_fatal(endpoint_id: &ClientEndpointId) -> bool 
 mod tests {
     use super::*;
     use crate::client::endpoint::ProfileId;
+
+    fn decode_endpoint_control(kind: &str, data: &str) -> Result<EndpointControlMessage, String> {
+        super::decode_endpoint_control(kind, data, &mut Default::default())
+    }
 
     #[test]
     fn unknown_optional_controls_are_ignored() {

@@ -80,6 +80,16 @@ If you want to end the session and stop its panes, stop the server:
 herdr server stop
 ```
 
+### Slow clients and output backpressure
+
+For client-rendered shells, the server keeps the latest pending presentation instead of replaying every intermediate update. Its snapshot, cumulative agent completions, agent view (including clears), and pane surface stay coherent. Replacing an unsent text update restores the last non-discardable screen baseline, allowing small incremental updates to continue. Resize, activation and incompatible geometry still trigger resynchronization. Graphics uploads and presentation fences retain their ordering.
+
+Clients and servers that negotiate `shell.snapshot.delta.v1` start with a full inventory, then transmit only changed fields and rows when that is smaller. Startup, recovery and unprofitable deltas use full snapshots; older peers continue using full snapshots throughout. These state updates and screen updates depend only on prior messages that cannot be discarded from the ordered connection; they do not claim that the client has received or displayed them. Snapshot encoding runs on the writer thread without holding the shared producer queue lock.
+
+Clipboard writes, notifications, endpoint responses, and input-mode changes are reliable events, not replaceable presentation state. Each client's pending reliable queue is limited to 1,024 items and roughly 64 MiB. Exceeding either budget closes only that connection rather than silently dropping events while connected or blocking other clients. Pending events are not guaranteed delivered after disconnection; pane processes and other clients continue running.
+
+On Linux and macOS, each client socket also requests a 4 KiB send buffer (reported as 8 KiB on Linux) to limit obsolete output queued in the kernel. This does not limit frame sizes or cancel partially written frames. Large in-flight frames, SSH bridges, and terminal buffers can still add latency on slow links; there is no fixed input-latency guarantee. Windows socket buffering is unchanged.
+
 ## Modes
 
 Herdr has terminal mode, prefix mode, and navigate mode.

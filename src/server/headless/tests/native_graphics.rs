@@ -651,6 +651,148 @@ async fn delta_encoded_inline_commit_updates_next_native_bank() {
 }
 
 #[tokio::test]
+async fn recompute_cannot_coalesce_native_bank_removal_before_reused_bank_upload() {
+    for delta in [false, true] {
+        let (mut server, _control, _render, pane) = retained_test_server_with_control(
+            b"\x1b_Ga=T,f=32,t=d,i=7,p=3,s=1,v=1,c=1,r=1,q=2;/wAA/w==\x1b\\",
+        );
+        let writer = ClientWriter::test_paused();
+        let client = server.clients.get_mut(&1).unwrap();
+        client.writer = Some(writer.clone());
+        client.render_state.enable_surface_delta(delta);
+        client.cell_size = crate::kitty_graphics::HostCellSize {
+            width_px: 10, height_px: 20,
+        };
+        client.direct_graphics = true;
+        client.pixel_mouse = true;
+        server.app.state.kitty_graphics_enabled = true;
+        server.render_and_stream();
+        let mut decoder = protocol::surface_reuse::Decoder::new(delta, false);
+        let initial = drain_native_render_messages(&writer).into_iter()
+            .map(|message| decoder.decode(message).unwrap()).collect::<Vec<_>>();
+        let (transfer, original_bank) = initial.iter().find_map(|message| match message {
+            ServerMessage::GraphicsFile { transfer_id, image_id, .. } => Some((*transfer_id, *image_id)),
+            _ => None,
+        }).expect("initial native upload");
+        assert_ne!(original_bank & NATIVE_SLOT_BIT, 0);
+        ack_native(&mut server, 1, transfer, original_bank);
+
+        // Non-delta request_recompute deliberately drops last_pane_surface.
+        // Protection must come from bank history, not that optional baseline.
+        write_shared_test_pane(&mut server, pane, b"\x1b_Ga=d,d=A\x1b\\");
+        server.clients.get_mut(&1).unwrap().render_state.request_recompute();
+        if !delta {
+            assert!(server.clients[&1].render_state.last_pane_surface().is_none());
+        }
+        server.render_and_stream();
+        assert!(!writer.discard_pending_render(), "unclaimed bank-removal surface must remain protected");
+        server.app.state.workspaces[0].custom_name = Some("metadata while removal is pending".into());
+        server.render_and_stream();
+        write_shared_test_pane(&mut server, pane,
+            b"\x1b_Ga=T,f=32,t=d,i=7,p=3,s=1,v=1,c=1,r=1,q=2;AP8A/w==\x1b\\");
+        server.render_and_stream();
+        let messages = drain_native_render_messages(&writer).into_iter()
+            .map(|message| decoder.decode(message).unwrap()).collect::<Vec<_>>();
+        let surfaces = messages.iter().enumerate().filter_map(|(index, message)| match message {
+            ServerMessage::PaneSurface(surface) => Some((index, surface)),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(surfaces.len(), 2, "old scene removal then replacement metadata; delta={delta}");
+        assert!(surfaces[0].1.graphics.placements.is_empty());
+        assert!(surfaces[0].1.graphics.retained_assets.is_empty());
+        assert_eq!(surfaces[1].1.graphics.placements.len(), 1);
+        let (file_index, transfer, new_bank) = messages.iter().enumerate().find_map(|(index, message)| match message {
+            ServerMessage::GraphicsFile { transfer_id, image_id, .. } => Some((index, *transfer_id, *image_id)),
+            _ => None,
+        }).expect("replacement native upload");
+        assert_eq!(new_bank, original_bank, "pruned source starts in bank1 again");
+        assert!(surfaces[0].0 < surfaces[1].0 && surfaces[1].0 < file_index,
+            "bank removal must reach consumer before the reused-bank upload");
+        ack_native(&mut server, 1, transfer, new_bank);
+        shutdown_test_runtimes(&mut server);
+    }
+}
+
+#[tokio::test]
+async fn reactivation_keeps_protected_old_projection_but_only_new_epoch_can_present() {
+    use crate::client::endpoint::{decode_endpoint_control, ClientEndpointId, EndpointControlMessage};
+    let (mut server, _control, _render, pane) = retained_test_server_with_control(
+        b"OLD_EPOCH_SCREEN\x1b_Ga=T,f=32,t=d,i=7,p=3,s=1,v=1,c=1,r=1,q=2;/wAA/w==\x1b\\",
+    );
+    let writer = ClientWriter::test_paused();
+    let client = server.clients.get_mut(&1).unwrap();
+    client.writer = Some(writer.clone());
+    client.cell_size = crate::kitty_graphics::HostCellSize { width_px: 10, height_px: 20 };
+    client.direct_graphics = false;
+    server.app.state.kitty_graphics_enabled = true;
+    server.render_and_stream();
+    let old_revision = server.clients[&1].shell_projection_revision;
+    assert!(!writer.discard_pending_render(), "old inline graphics presentation is protected");
+    assert!(server.set_client_shell_surface_active(1, false).unwrap().0);
+    write_shared_test_pane(&mut server, pane, b"\rNEW_EPOCH_SCREEN\x1b[K");
+    let (changed, floor) = server.set_client_shell_surface_active(1, true).unwrap();
+    assert!(changed && floor > old_revision);
+    server.render_and_stream();
+    // New epoch cannot steal the slot or re-label old graphics with its snapshot.
+    let old_messages = drain_native_render_messages(&writer);
+    let old_surface = old_messages.iter().find_map(|message| match message {
+        ServerMessage::PaneSurface(surface) => Some(surface.clone()),
+        _ => None,
+    }).expect("preserved old graphics surface");
+    assert_eq!(old_surface.projection_revision, old_revision);
+    assert!(old_surface.projection_revision < floor);
+    let old_snapshot = old_messages.iter().find_map(|message| match message {
+        ServerMessage::EndpointControl { kind, data }
+            if kind == protocol::endpoint::ENDPOINT_SNAPSHOT_KIND =>
+                Some(serde_json::from_str::<protocol::ClientShellSnapshot>(data).unwrap()),
+        _ => None,
+    }).unwrap();
+    assert_eq!(old_snapshot.revision, old_surface.projection_revision);
+
+    // Writer progress permits the complete current pair, without replaying the
+    // old projection under the activation's new revision floor.
+    server.render_and_stream();
+    let current = drain_native_render_messages(&writer);
+    let mut receiver = crate::client::ClientShellState::new(
+        crate::client::ClientShellConfig::from_config(&crate::config::Config::default()),
+    );
+    receiver.set_endpoint_agent_view_projection_supported(&ClientEndpointId::Local, true);
+    let mut new_surface = None;
+    let mut snapshots = protocol::snapshot_delta::SnapshotDecoder::new(false);
+    for message in current {
+        match message {
+            ServerMessage::EndpointControl { kind, data } => {
+                match decode_endpoint_control(&kind, &data, &mut snapshots).unwrap() {
+                    EndpointControlMessage::AgentViewProjection(projection) =>
+                        receiver.set_endpoint_agent_view_projection_for_generation(&ClientEndpointId::Local, 11, projection),
+                    EndpointControlMessage::AgentCompletions(projection) =>
+                        receiver.set_endpoint_agent_completions(&ClientEndpointId::Local, 11, projection),
+                    EndpointControlMessage::Snapshot(snapshot) => {
+                        assert!(snapshot.revision >= floor);
+                        receiver.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 11, snapshot);
+                    }
+                    _ => panic!("expected complete current projection"),
+                }
+            }
+            ServerMessage::PaneSurface(surface) => new_surface = Some(surface),
+            other => panic!("unexpected reactivation work {other:?}"),
+        }
+    }
+    let new_surface = new_surface.expect("current full surface");
+    assert!(new_surface.projection_revision >= floor);
+    receiver.set_pane_surface(old_surface.clone());
+    assert!(!receiver.has_presented_surface(), "old geometry/hit map cannot present in the new epoch");
+    receiver.set_pane_surface(new_surface);
+    assert!(receiver.has_presented_surface());
+    let painted = receiver.compose(80, 26).unwrap();
+    assert!(frame_text(&painted).contains("NEW_EPOCH_SCREEN"));
+    receiver.set_pane_surface(old_surface);
+    let painted = receiver.compose(80, 26).unwrap();
+    assert!(frame_text(&painted).contains("NEW_EPOCH_SCREEN"), "late old surface cannot roll presentation back");
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn oversized_native_scene_queues_file_and_continues_stripped_assets_after_ack() {
     let (mut server, _control, _render, pane) = retained_test_server_with_control(b"");
     let writer = ClientWriter::test_paused();

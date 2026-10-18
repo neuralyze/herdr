@@ -564,12 +564,14 @@ impl HeadlessServer {
             }
             crate::render_prof::counter("retained_surface.bytes", serialized.len() as u64);
             let send = if native_upload.is_some() || self.native_graphics.is_pending(client_id) {
-                writer.render.send_ordered(serialized)
+                writer.render.send_ordered(serialized).map(|()| None)
+            } else if graphics_delivery.is_some() {
+                writer.render.try_send_protected(serialized).map(|()| None)
             } else {
-                writer.render.try_send(serialized)
+                writer.render.try_send_tracked(serialized).map(Some)
             };
             match send {
-                Ok(()) => {
+                Ok(claimed) => {
                     if let Some((graphics, inline_assets)) = prepared.queued_surface_graphics() {
                         self.native_graphics
                             .commit_scene(client_id, graphics, inline_assets);
@@ -588,7 +590,11 @@ impl HeadlessServer {
                     } else {
                         client.clear_deferred_render();
                     }
-                    client.render_state.commit_sent_frame(prepared);
+                    if let Some(claimed) = claimed {
+                        client.render_state.commit_replaceable_frame(prepared, claimed);
+                    } else {
+                        client.render_state.commit_sent_frame(prepared);
+                    }
                     sent += 1;
                 }
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {

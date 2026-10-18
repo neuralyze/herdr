@@ -175,8 +175,8 @@ pub(crate) struct ClientConnection {
     pub(crate) staged_clipboard_files: Vec<PathBuf>,
     /// Connection-local workspace and tab projection for a client-owned shell.
     pub(crate) shell_location: Option<ClientShellLocation>,
-    /// Last coherent shell replacement sent to this client.
-    pub(crate) shell_snapshot: Option<crate::protocol::ClientShellSnapshot>,
+    /// Latest coherent candidate, shared with the bounded presentation queue.
+    pub(crate) shell_snapshot: Option<std::sync::Arc<crate::protocol::ClientShellSnapshot>>,
     pub(crate) shell_agent_completions: Option<crate::protocol::endpoint::EndpointAgentCompletions>,
     /// View policy paired with the last coherent shell replacement.
     pub(crate) shell_agent_view: Option<crate::api::schema::AgentViewSetParams>,
